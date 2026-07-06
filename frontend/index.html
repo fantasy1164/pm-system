@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>專案期程預算總表</title>
+<style>
+:root{
+  --bg:#F6F6F2; --panel:#FFFFFF; --ink:#1F2933; --ink2:#5B6572; --line:#E2E1DA;
+  --teal:#0F766E; --teal-bg:#D9EFEC; --amber:#B45309; --amber-bg:#FBEED8;
+  --gray:#6B7280; --gray-bg:#ECECEA; --red:#C2382C; --navy:#1F3A5F;
+  --radius:8px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);
+  font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",system-ui,sans-serif;
+  font-size:15px;line-height:1.6}
+button{font:inherit;cursor:pointer}
+input,select,textarea{font:inherit;color:var(--ink)}
+
+/* ---------- header ---------- */
+header{background:var(--panel);border-bottom:1px solid var(--line);
+  padding:10px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  position:sticky;top:0;z-index:20}
+header h1{font-size:17px;font-weight:600;margin:0;color:var(--navy);letter-spacing:.02em}
+.year-tabs{display:flex;gap:4px;flex-wrap:wrap}
+.year-tab{border:1px solid var(--line);background:var(--panel);border-radius:999px;
+  padding:3px 14px;color:var(--ink2)}
+.year-tab.active{background:var(--navy);border-color:var(--navy);color:#fff}
+.spacer{flex:1}
+.view-toggle{display:flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.view-toggle button{border:0;background:var(--panel);padding:5px 14px;color:var(--ink2)}
+.view-toggle button.active{background:var(--teal);color:#fff}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:var(--radius);
+  padding:5px 12px;color:var(--ink)}
+.btn.primary{background:var(--teal);border-color:var(--teal);color:#fff}
+.btn.danger{background:#fff;border-color:var(--red);color:var(--red)}
+.user-chip{font-size:12.5px;color:var(--ink2);border:1px dashed var(--line);
+  border-radius:999px;padding:3px 10px;background:transparent}
+
+/* ---------- layout ---------- */
+main{padding:14px;max-width:1400px;margin:0 auto}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.state-msg{padding:48px 16px;text-align:center;color:var(--ink2)}
+
+/* ---------- table view ---------- */
+.tbl-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:960px;font-size:13.5px}
+th{position:sticky;top:0;background:#FAFAF7;color:var(--ink2);font-weight:500;
+  text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid #EFEEE8;vertical-align:top;white-space:nowrap}
+tr.row:hover td{background:#F4F8F7;cursor:pointer}
+td.name{white-space:normal;min-width:180px;font-weight:500}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.badge{display:inline-block;font-size:12px;border-radius:999px;padding:1px 9px}
+.badge.ongoing{background:var(--teal-bg);color:var(--teal)}
+.badge.not_awarded{background:var(--amber-bg);color:var(--amber)}
+.badge.closed{background:var(--gray-bg);color:var(--gray)}
+.budget-chip{display:inline-block;font-size:12px;color:var(--ink2);
+  background:#F3F3EF;border-radius:4px;padding:0 6px;margin:1px 2px 1px 0;
+  font-variant-numeric:tabular-nums}
+td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
+
+/* ---------- gantt ---------- */
+.gantt-bar-ctl{display:flex;gap:8px;align-items:center;padding:10px 12px;
+  border-bottom:1px solid var(--line);flex-wrap:wrap}
+.legend{display:flex;gap:14px;font-size:12.5px;color:var(--ink2);flex-wrap:wrap}
+.legend i{display:inline-block;width:14px;height:9px;border-radius:2px;margin-right:4px;vertical-align:baseline}
+.gantt{display:flex;align-items:stretch}
+.g-names{flex:0 0 190px;border-right:1px solid var(--line);background:#FAFAF7}
+.g-names .g-head{height:34px;border-bottom:1px solid var(--line);display:flex;
+  align-items:center;padding:0 10px;font-size:12px;color:var(--ink2)}
+.g-name{height:44px;border-bottom:1px solid #EFEEE8;padding:5px 10px;cursor:pointer;
+  display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+.g-name:hover{background:#F4F8F7}
+.g-name .nm{font-size:13px;font-weight:500;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.g-name .sub{font-size:11.5px;color:var(--ink2);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.g-scroll{flex:1;overflow-x:auto;overflow-y:hidden}
+.g-scroll svg{display:block}
+
+/* ---------- modal ---------- */
+.overlay{position:fixed;inset:0;background:rgba(31,41,51,.45);z-index:50;
+  display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow:auto}
+.modal{background:var(--panel);border-radius:12px;max-width:640px;width:100%;
+  padding:18px 20px 20px}
+.modal h2{margin:0 0 14px;font-size:16px;color:var(--navy)}
+.frm{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+.frm label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--ink2)}
+.frm label.full{grid-column:1/-1}
+.frm input,.frm select,.frm textarea{border:1px solid var(--line);border-radius:6px;
+  padding:6px 8px;background:#fff}
+.frm textarea{resize:vertical;min-height:52px}
+.bud-row{display:flex;gap:8px;margin-bottom:6px;align-items:center}
+.bud-row input{border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+.bud-row input.y{width:84px}
+.bud-row input.a{flex:1}
+.bud-row button{border:0;background:none;color:var(--red);font-size:16px;padding:0 4px}
+.modal-actions{display:flex;gap:10px;margin-top:16px;justify-content:flex-end}
+.modal-actions .btn.danger{margin-right:auto}
+
+/* ---------- toast ---------- */
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+  background:var(--ink);color:#fff;padding:8px 18px;border-radius:999px;
+  font-size:13.5px;opacity:0;transition:opacity .25s;z-index:99;pointer-events:none;
+  max-width:90vw}
+#toast.show{opacity:.94}
+#toast.err{background:var(--red)}
+
+/* ---------- mobile ---------- */
+@media (max-width:640px){
+  header{padding:8px 10px;gap:8px}
+  header h1{font-size:15px;width:100%}
+  main{padding:8px}
+  .g-names{flex-basis:118px}
+  .g-name .nm{font-size:12px}
+  .frm{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){ *{transition:none!important} }
+</style>
+</head>
+<body>
+<header>
+  <h1>專案期程預算總表</h1>
+  <nav class="year-tabs" id="yearTabs" aria-label="年度"></nav>
+  <button class="btn" id="btnNewYear" title="建立新年度並複製跨年度專案">＋ 新年度</button>
+  <span class="spacer"></span>
+  <div class="view-toggle" role="tablist">
+    <button id="vTable" class="active">總表</button>
+    <button id="vGantt">甘特圖</button>
+    <button id="vUsers" style="display:none">使用者</button>
+  </div>
+  <button class="btn primary" id="btnAdd">＋ 新增專案</button>
+  <button class="user-chip" id="userChip" title="點擊設定操作者名稱"></button>
+</header>
+
+<main>
+  <div class="panel" id="content"><div class="state-msg">載入中…</div></div>
+</main>
+
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+/* ============================== 設定與狀態 ============================== */
+// 部署後改這一行:填入你的 Render 服務網址 (結尾 /api)
+const PROD_API = "https://REPLACE-WITH-YOUR-SERVICE.onrender.com/api";
+const API = localStorage.getItem("pm_api") ||
+  (location.hostname.endsWith("github.io") ? PROD_API : "http://127.0.0.1:5000/api");
+const S = {
+  years: [], year: null, projects: [], view: "table",
+  pxPerDay: window.innerWidth < 640 ? 1.4 : 2.4,
+  auth: { enabled: false, clientId: "" },
+  me: null,   // {user:{...}, editable:"all"|[project_id]}
+};
+const getTok = () => sessionStorage.getItem("pm_token");
+const setTok = (t) => t ? sessionStorage.setItem("pm_token", t)
+                        : sessionStorage.removeItem("pm_token");
+const STATUS_TXT = { ongoing:"進行中", not_awarded:"未成案", closed:"已結案" };
+const BAR_FILL   = { ongoing:"#0F766E", not_awarded:"#E5B063", closed:"#9AA1AA" };
+
+/* ============================== 小工具 ============================== */
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const kid of kids) n.append(kid);
+  return n;
+};
+const fmtAmt = (n) => (n == null || n === "" ? "—" : Number(n).toLocaleString("zh-TW"));
+const rocDate = (iso) => {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${Number(y) - 1911}/${m}/${d}`;
+};
+const utc = (iso) => { const [y,m,d] = iso.split("-").map(Number); return Date.UTC(y, m-1, d); };
+const DAY = 86400000;
+const todayISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
+let toastTimer = null;
+function toast(msg, isErr = false) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.className = ""), 2600);
+}
+
+/* ============================== API ============================== */
+async function api(path, opts = {}) {
+  const headers = { "Content-Type": "application/json" };
+  const tok = getTok();
+  if (tok) headers["Authorization"] = "Bearer " + tok;
+  else  // 開發模式:以 X-User 記操作者 (header 僅容許 ISO-8859-1,中文須編碼)
+    headers["X-User"] = encodeURIComponent(localStorage.getItem("pm_user") || "訪客");
+  const res = await fetch(API + path, { ...opts, headers });
+  const nt = res.headers.get("X-New-Token");   // 滑動續期
+  if (nt) setTok(nt);
+  let body = null;
+  try { body = await res.json(); } catch (_e) { /* no body */ }
+  if (res.status === 401 && S.auth.enabled) {
+    logout((body && body.error) || "請重新登入");
+    throw new Error((body && body.error) || "未登入");
+  }
+  if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);
+  return body;
+}
+
+/* ============================== 登入 / 權限 ============================== */
+function canEdit(pid) {
+  if (!S.auth.enabled) return true;
+  if (!S.me) return false;
+  return S.me.editable === "all" ||
+         (pid != null && S.me.editable.includes(pid));
+}
+function canCreate() {
+  return !S.auth.enabled || (S.me && S.me.editable === "all");
+}
+function isAdmin() {
+  return !S.auth.enabled || (S.me && S.me.user.role === "admin");
+}
+function applyPerms() {
+  $("#btnAdd").style.display = canCreate() ? "" : "none";
+  $("#btnNewYear").style.display = canCreate() ? "" : "none";
+  $("#vUsers").style.display = isAdmin() ? "" : "none";
+}
+function logout(msg) {
+  setTok(null); S.me = null; clearTimeout(idleT);
+  applyPerms(); renderUserChip(); renderLogin(msg);
+}
+let gisP = null;
+function loadGIS() {
+  if (window.google && window.google.accounts) return Promise.resolve();
+  if (gisP) return gisP;
+  gisP = new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client";
+    s.onload = res; s.onerror = rej;
+    document.head.append(s);
+  });
+  return gisP;
+}
+function renderLogin(msg) {
+  $("#yearTabs").innerHTML = "";
+  const box = el("div", { class: "state-msg" });
+  if (msg) box.append(el("div", { style: "color:var(--red);margin-bottom:10px" }, msg));
+  box.append(el("div", { style: "font-size:16px;color:var(--navy);font-weight:600" },
+                "專案期程預算總表"),
+             el("div", { style: "margin:6px 0 16px;color:var(--ink2)" },
+                "請使用 Google 帳號登入"),
+             el("div", { id: "gbtn", style: "display:flex;justify-content:center" }));
+  $("#content").replaceChildren(box);
+  loadGIS().then(() => {
+    window.google.accounts.id.initialize({
+      client_id: S.auth.clientId, callback: onGoogleCred });
+    window.google.accounts.id.renderButton(
+      document.getElementById("gbtn"),
+      { theme: "outline", size: "large", text: "signin_with", width: 240 });
+  }).catch(() =>
+    $("#gbtn").append(el("div", {}, "無法載入 Google 登入元件,請檢查網路後重整")));
+}
+async function onGoogleCred(resp) {
+  try {
+    const r = await fetch(API + "/auth/google", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: resp.credential }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      setTok(d.token);
+      S.me = { user: d.user, editable: d.editable };
+      enterApp();
+    } else if (d.code === "pending") {
+      $("#content").innerHTML =
+        '<div class="state-msg">帳號已建立,請等待管理者核准後再登入。</div>';
+    } else renderLogin(d.error || "登入失敗,請重試");
+  } catch (_e) { renderLogin("無法連線後端,請稍後重試"); }
+}
+async function enterApp() {
+  renderUserChip(); applyPerms(); resetIdle();
+  await refresh();
+}
+/* 閒置 30 分鐘自動登出 (token 到期為後端硬上限,此為前端體驗) */
+let idleT = null;
+function resetIdle() {
+  if (!S.auth.enabled || !getTok()) return;
+  clearTimeout(idleT);
+  idleT = setTimeout(() => logout("閒置超過 30 分鐘,已自動登出"), 30 * 60 * 1000);
+}
+["pointerdown", "keydown"].forEach(ev =>
+  document.addEventListener(ev, resetIdle, { passive: true }));
+
+/* ============================== 載入流程 ============================== */
+async function waitBackend() {
+  for (let i = 0; ; i++) {
+    try {
+      const res = await fetch(API + "/health");
+      const d = await res.json().catch(() => ({}));
+      if (res.ok) return;
+      if (d.status === "failed") {   // 還原失敗:顯示原因並停止輪詢,等人工處置
+        $("#content").innerHTML =
+          `<div class="state-msg">系統維護中,請聯絡管理者。<br>` +
+          `<small style="color:var(--ink2)">${esc(d.detail || "")}</small></div>`;
+        throw new Error(d.detail || "restore failed");
+      }
+    } catch (e) {
+      if (String(e.message).includes("restore failed")) throw e;
+    }
+    $("#content").innerHTML =
+      '<div class="state-msg">系統喚醒中,約需一分鐘,請稍候…</div>';
+    await new Promise(r => setTimeout(r, 4000));
+    if (i > 40) { $("#content").innerHTML =
+      '<div class="state-msg">無法連線後端,請確認服務狀態後重新整理</div>';
+      throw new Error("backend unreachable"); }
+  }
+}
+
+async function loadYears() {
+  S.years = await api("/years");
+  if (!S.years.length) S.years = [new Date().getFullYear() - 1911];
+  if (!S.years.includes(S.year)) S.year = S.years[0];
+  renderYearTabs();
+}
+
+async function loadProjects() {
+  S.projects = await api(`/projects?year=${S.year}`);
+  render();
+}
+
+/* ============================== Header ============================== */
+function renderYearTabs() {
+  const nav = $("#yearTabs");
+  nav.innerHTML = "";
+  for (const y of S.years) {
+    nav.append(el("button", {
+      class: "year-tab" + (y === S.year ? " active" : ""),
+      onclick: async () => { S.year = y; renderYearTabs(); await loadProjects(); },
+    }, `${y} 年度`));
+  }
+}
+function renderUserChip() {
+  const c = $("#userChip");
+  if (S.auth.enabled) {
+    c.textContent = S.me ? `${S.me.user.name || S.me.user.email}|登出` : "";
+    c.style.display = S.me ? "" : "none";
+  } else {
+    c.style.display = "";
+    c.textContent = "操作者:" + (localStorage.getItem("pm_user") || "訪客");
+  }
+}
+$("#userChip").addEventListener("click", () => {
+  if (S.auth.enabled) { if (S.me && confirm("確定登出?")) logout(); return; }
+  const v = prompt("操作者名稱(記入異動紀錄,登入功能上線後改由帳號帶入)",
+                   localStorage.getItem("pm_user") || "");
+  if (v !== null) { localStorage.setItem("pm_user", v.trim()); renderUserChip(); }
+});
+$("#vTable").addEventListener("click", () => setView("table"));
+$("#vGantt").addEventListener("click", () => setView("gantt"));
+$("#vUsers").addEventListener("click", () => setView("users"));
+function setView(v) {
+  S.view = v;
+  for (const [id, name] of [["#vTable","table"],["#vGantt","gantt"],["#vUsers","users"]])
+    $(id).classList.toggle("active", v === name);
+  render();
+}
+$("#btnAdd").addEventListener("click", () => openModal(null));
+$("#btnNewYear").addEventListener("click", async () => {
+  const def = Math.max(...S.years) + 1;
+  const v = prompt("建立新年度(民國),會自動複製履約期跨入該年度的進行中專案:", def);
+  if (v === null) return;
+  const y = parseInt(v, 10);
+  if (!y || y < 100 || y > 200) return toast("年度格式不正確", true);
+  try {
+    const r = await api(`/years/${y}/init`, { method: "POST" });
+    toast(`已建立 ${y} 年度,複製 ${r.copied.length} 筆跨年度專案`);
+    S.year = y;
+    await loadYears(); await loadProjects();
+  } catch (e) { toast(e.message, true); }
+});
+
+/* ============================== 總表 ============================== */
+function render() {
+  if (S.view === "users") return renderUsers();
+  if (!S.projects.length) {
+    $("#content").innerHTML =
+      `<div class="state-msg">此年度尚無專案,點右上「＋ 新增專案」開始建立</div>`;
+    return;
+  }
+  if (S.view === "table") renderTable(); else renderGantt();
+}
+
+function renderTable() {
+  const head = ["狀態","案名","契約號","SO number","履約起","履約迄","工期",
+                "參與人員","決標金額","各年度預估認列","備註"];
+  const thead = el("thead", {}, el("tr", {}, ...head.map(h => el("th", {}, h))));
+  const tbody = el("tbody");
+  for (const p of S.projects) {
+    const budgets = el("td", {}, ...p.budgets.map(b =>
+      el("span", { class: "budget-chip" }, `${b.year}:${fmtAmt(b.amount)}`)));
+    tbody.append(el("tr", { class: "row", onclick: () => openModal(p) },
+      el("td", {}, el("span", { class: "badge " + p.status }, STATUS_TXT[p.status] || p.status)),
+      el("td", { class: "name" }, p.name),
+      el("td", {}, p.contract_no || "—"),
+      el("td", {}, p.so_number || "—"),
+      el("td", { class: "num" }, rocDate(p.start_date)),
+      el("td", { class: "num" }, rocDate(p.end_date)),
+      el("td", { class: "num" }, p.duration_days != null ? p.duration_days + " 天" : "—"),
+      el("td", {}, p.participants || "—"),
+      el("td", { class: "num" }, fmtAmt(p.awarded_amount)),
+      budgets,
+      el("td", { class: "notes" }, p.notes || ""),
+    ));
+  }
+  const wrap = el("div", { class: "tbl-wrap" }, el("table", {}, thead, tbody));
+  $("#content").replaceChildren(wrap);
+}
+
+/* ============================== 甘特圖 ============================== */
+function ganttRange() {
+  const dated = S.projects.filter(p => p.start_date && p.end_date);
+  const ce = 1911 + S.year;
+  let lo = utc(`${ce}-01-01`), hi = utc(`${ce}-12-31`);
+  for (const p of dated) {
+    lo = Math.min(lo, utc(p.start_date));
+    hi = Math.max(hi, utc(p.end_date));
+  }
+  // 對齊月界:起點退到當月1日,終點推到次月1日
+  const a = new Date(lo), b = new Date(hi);
+  return {
+    lo: Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), 1),
+    hi: Date.UTC(b.getUTCFullYear(), b.getUTCMonth() + 1, 1),
+  };
+}
+
+function renderGantt() {
+  const dated = S.projects.filter(p => p.start_date && p.end_date);
+  const undated = S.projects.filter(p => !p.start_date || !p.end_date);
+  const { lo, hi } = ganttRange();
+  const px = S.pxPerDay;
+  const totalDays = Math.round((hi - lo) / DAY);
+  const W = Math.ceil(totalDays * px);
+  const HEAD = 34, ROW = 44;
+  const H = HEAD + dated.length * ROW;
+  const X = (ms) => Math.round((ms - lo) / DAY * px);
+
+  let svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg" font-family="inherit">`;
+
+  // 季度底紋 + 月格線 + 月標
+  for (let t = lo; t < hi;) {
+    const d = new Date(t);
+    const y = d.getUTCFullYear(), m = d.getUTCMonth();
+    const next = Date.UTC(y, m + 1, 1);
+    const q = Math.floor(m / 3);
+    if (q % 2 === 1)
+      svg += `<rect x="${X(t)}" y="${HEAD}" width="${X(next)-X(t)}" height="${H-HEAD}" fill="#000" opacity="0.025"/>`;
+    svg += `<line x1="${X(t)}" y1="0" x2="${X(t)}" y2="${H}" stroke="#E2E1DA" stroke-width="1"/>`;
+    const label = `${y-1911}/${String(m+1).padStart(2,"0")}`;
+    if (X(next) - X(t) > 34)
+      svg += `<text x="${X(t)+4}" y="21" font-size="11" fill="#5B6572">${label}</text>`;
+    t = next;
+  }
+  svg += `<line x1="0" y1="${HEAD}" x2="${W}" y2="${HEAD}" stroke="#E2E1DA"/>`;
+
+  // 橫向列線
+  for (let i = 1; i <= dated.length; i++)
+    svg += `<line x1="0" y1="${HEAD+i*ROW}" x2="${W}" y2="${HEAD+i*ROW}" stroke="#EFEEE8"/>`;
+
+  // 專案長條
+  dated.forEach((p, i) => {
+    const x = X(utc(p.start_date));
+    const w = Math.max(X(utc(p.end_date)) + Math.round(px) - x, 4); // 含迄日整天
+    const y = HEAD + i * ROW + 11, h = 22;
+    const fill = BAR_FILL[p.status] || "#0F766E";
+    const dash = p.status === "not_awarded" ? ` stroke="#B45309" stroke-width="1.5" stroke-dasharray="5 3"` : "";
+    const op = p.status === "not_awarded" ? "0.55" : (p.status === "closed" ? "0.7" : "0.92");
+    svg += `<g class="bar" data-id="${p.id}" style="cursor:pointer">`;
+    svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="${fill}" opacity="${op}"${dash}/>`;
+    if (w > 74)
+      svg += `<text x="${x+8}" y="${y+15}" font-size="11" fill="#fff">${p.duration_days} 天</text>`;
+    if (p.kickoff_date) {
+      const kx = X(utc(p.kickoff_date)) + px/2;
+      svg += `<path d="M ${kx} ${y-6} l 5 6 l -5 6 l -5 -6 z" fill="#1F3A5F"><title>啟動會議 ${rocDate(p.kickoff_date)}</title></path>`;
+    }
+    svg += `<title>${esc(p.name)}\n${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}(${p.duration_days} 天)\n${STATUS_TXT[p.status]}${p.awarded_amount!=null ? "\n決標 " + fmtAmt(p.awarded_amount) : ""}</title></g>`;
+  });
+
+  // 今天線
+  const now = utc(todayISO());
+  if (now >= lo && now <= hi) {
+    const tx = X(now);
+    svg += `<line x1="${tx}" y1="0" x2="${tx}" y2="${H}" stroke="#C2382C" stroke-width="1.5"/>`;
+    svg += `<rect x="${tx+3}" y="4" width="34" height="16" rx="3" fill="#C2382C"/>`;
+    svg += `<text x="${tx+20}" y="16" font-size="10.5" fill="#fff" text-anchor="middle">今天</text>`;
+  }
+  svg += `</svg>`;
+
+  // 左側名稱欄
+  const names = el("div", { class: "g-names" },
+    el("div", { class: "g-head" }, `${dated.length} 件專案`));
+  for (const p of dated) {
+    names.append(el("div", { class: "g-name", onclick: () => openModal(p) },
+      el("div", { class: "nm", title: p.name }, p.name),
+      el("div", { class: "sub" }, `${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}`)));
+  }
+
+  const scroll = el("div", { class: "g-scroll" });
+  scroll.innerHTML = svg;
+  scroll.addEventListener("click", (ev) => {
+    const g = ev.target.closest("g.bar");
+    if (!g) return;
+    const p = S.projects.find(x => x.id === Number(g.dataset.id));
+    if (p) openModal(p);
+  });
+
+  const ctl = el("div", { class: "gantt-bar-ctl" },
+    el("button", { class: "btn", onclick: () => zoom(-0.5) }, "－"),
+    el("button", { class: "btn", onclick: () => zoom(+0.5) }, "＋"),
+    el("span", { class: "legend" },
+      legendItem(BAR_FILL.ongoing, "進行中"),
+      legendItem(BAR_FILL.not_awarded, "未成案"),
+      legendItem(BAR_FILL.closed, "已結案"),
+      el("span", {}, "◆ 啟動會議")),
+    undated.length ? el("span", { class: "legend" },
+      `另有 ${undated.length} 件未填起迄日期,僅顯示於總表`) : "");
+
+  const wrap = el("div", {}, ctl, el("div", { class: "gantt" }, names, scroll));
+  $("#content").replaceChildren(wrap);
+
+  // 自動捲到今天附近
+  if (now >= lo && now <= hi)
+    scroll.scrollLeft = Math.max(0, X(now) - scroll.clientWidth * 0.35);
+}
+function legendItem(color, txt) {
+  const s = el("span", {}, el("i", {}), txt);
+  s.querySelector("i").style.background = color;
+  return s;
+}
+function zoom(dv) {
+  S.pxPerDay = Math.min(6, Math.max(0.8, S.pxPerDay + dv));
+  renderGantt();
+}
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+/* ============================== 使用者管理 (admin) ============================== */
+const ROLE_TXT = { admin:"管理者", pm:"專案經理", dept_head:"部門主管",
+                   sales:"業務人員", dev:"開發人員" };
+async function renderUsers() {
+  let users;
+  try { users = await api("/users"); }
+  catch (e) { $("#content").innerHTML =
+    `<div class="state-msg">${esc(e.message)}</div>`; return; }
+  const thead = el("thead", {}, el("tr", {},
+    ...["Email","姓名","角色","狀態","全域編輯","",""].map(h => el("th", {}, h))));
+  const tbody = el("tbody");
+  const myId = S.me ? S.me.user.id : -1;
+  for (const u of users) {
+    const roleSel = el("select", {},
+      ...Object.entries(ROLE_TXT).map(([v, txt]) => el("option", { value: v }, txt)));
+    roleSel.value = u.role;
+    const stSel = el("select", {},
+      el("option", { value: "pending" }, "待核准"),
+      el("option", { value: "active" }, "啟用"),
+      el("option", { value: "disabled" }, "停用"));
+    stSel.value = u.status;
+    const ce = el("input", { type: "checkbox" });
+    ce.checked = !!u.can_edit;
+    const self = u.id === myId;
+    if (self) { roleSel.disabled = stSel.disabled = ce.disabled = true; }
+    const saveBtn = el("button", { class: "btn", onclick: async () => {
+      try {
+        await api(`/users/${u.id}`, { method: "PUT", body: JSON.stringify({
+          role: roleSel.value, status: stSel.value, can_edit: ce.checked ? 1 : 0 })});
+        toast("已更新 " + u.email); renderUsers();
+      } catch (e) { toast(e.message, true); }
+    }}, "儲存");
+    const delBtn = el("button", { class: "btn danger", onclick: async () => {
+      if (!confirm(`刪除使用者 ${u.email}?其編輯授權將一併移除`)) return;
+      try { await api(`/users/${u.id}`, { method: "DELETE" });
+        toast("已刪除"); renderUsers(); }
+      catch (e) { toast(e.message, true); }
+    }}, "刪除");
+    if (self) { saveBtn.disabled = delBtn.disabled = true; }
+    const tr = el("tr", {},
+      el("td", {}, u.email + (self ? "(你)" : "")),
+      el("td", {}, u.name || "—"),
+      el("td", {}, roleSel), el("td", {}, stSel), el("td", {}, ce),
+      el("td", {}, saveBtn), el("td", {}, delBtn));
+    if (u.status === "pending") tr.style.background = "var(--amber-bg)";
+    tbody.append(tr);
+  }
+  const wrap = el("div", { class: "tbl-wrap" },
+    el("table", { style: "min-width:720px" }, thead, tbody));
+  $("#content").replaceChildren(wrap);
+}
+
+/* --------- 逐案編輯授權 (admin,顯示於編輯視窗) --------- */
+function buildEditorsSection(p) {
+  const box = el("div", { style: "margin-top:14px;border-top:1px solid var(--line);padding-top:10px" },
+    el("div", { style: "font-size:12.5px;color:var(--ink2);margin-bottom:6px" },
+      "逐案編輯授權(勾選者可編輯本案;全域編輯者不需逐案勾選)"));
+  const list = el("div", { style: "display:flex;flex-wrap:wrap;gap:4px 16px" },
+    "載入中…");
+  box.append(list);
+  Promise.all([api("/users"), api(`/projects/${p.id}/editors`)])
+    .then(([users, editors]) => {
+      list.textContent = "";
+      const boxes = [];
+      for (const u of users.filter(u => u.status === "active")) {
+        const cb = el("input", { type: "checkbox" });
+        cb.checked = editors.includes(u.id);
+        cb.dataset.uid = u.id;
+        if (u.role === "admin" || u.can_edit) { cb.checked = true; cb.disabled = true; }
+        else boxes.push(cb);
+        list.append(el("label", { style: "display:flex;gap:4px;align-items:center;font-size:13px" },
+          cb, (u.name || u.email) + (u.can_edit || u.role === "admin" ? "(全域)" : "")));
+      }
+      list.append(el("button", { class: "btn", style: "margin-left:auto", onclick: async () => {
+        const ids = boxes.filter(b => b.checked).map(b => Number(b.dataset.uid));
+        try { await api(`/projects/${p.id}/editors`, {
+          method: "PUT", body: JSON.stringify({ user_ids: ids }) });
+          toast("已更新編輯授權"); }
+        catch (e) { toast(e.message, true); }
+      }}, "儲存授權"));
+    })
+    .catch(e => { list.textContent = e.message; });
+  return box;
+}
+
+/* ============================== 編輯視窗 ============================== */
+function openModal(p) {
+  const isNew = !p;
+  const d = p || { year: S.year, status: "ongoing", budgets: [{ year: S.year, amount: "" }] };
+  const budBox = el("div");
+  const addBudRow = (b = { year: "", amount: "" }) => {
+    const row = el("div", { class: "bud-row" },
+      el("input", { class: "y", type: "number", placeholder: "年度", value: b.year }),
+      el("input", { class: "a", type: "number", placeholder: "預估認列金額", value: b.amount ?? "" }),
+      el("button", { type: "button", title: "移除",
+        onclick: (ev) => ev.target.closest(".bud-row").remove() }, "✕"));
+    budBox.append(row);
+  };
+  (d.budgets || []).forEach(addBudRow);
+
+  const f = {};
+  const frm = el("div", { class: "frm" });
+  frm.append(
+    el("label", { class: "full" }, "案名 *", f.name = el("input", { value: d.name || "" })),
+    el("label", {}, "狀態", f.status = (() => {
+      const s = el("select", {},
+        el("option", { value: "ongoing" }, "進行中"),
+        el("option", { value: "not_awarded" }, "未成案"),
+        el("option", { value: "closed" }, "已結案"));
+      s.value = d.status; return s;
+    })()),
+    el("label", {}, "契約號", f.contract_no = el("input", { value: d.contract_no || "" })),
+    el("label", {}, "料號", f.part_no = el("input", { value: d.part_no || "" })),
+    el("label", {}, "SO number", f.so_number = el("input", { value: d.so_number || "" })),
+    el("label", {}, "履約起", f.start_date = el("input", { type: "date", value: d.start_date || "" })),
+    el("label", {}, "履約迄", f.end_date = el("input", { type: "date", value: d.end_date || "" })),
+    el("label", {}, "啟動會議", f.kickoff_date = el("input", { type: "date", value: d.kickoff_date || "" })),
+    el("label", {}, "決標金額", f.awarded_amount = el("input", { type: "number", value: d.awarded_amount ?? "" })),
+    el("label", { class: "full" }, "參與人員(逗號分隔)", f.participants = el("input", { value: d.participants || "" })),
+    el("label", { class: "full" }, "各年度預估認列", budBox,
+      el("button", { class: "btn", type: "button", onclick: () => addBudRow() }, "＋ 加一個年度")),
+    el("label", { class: "full" }, "備註", f.notes = el("textarea", {}, d.notes || "")),
+  );
+
+  const actions = el("div", { class: "modal-actions" });
+  if (!isNew) actions.append(el("button", { class: "btn danger", onclick: async () => {
+    if (!confirm(`確定刪除「${d.name}」?(可由異動紀錄追溯)`)) return;
+    try { await api(`/projects/${d.id}`, { method: "DELETE" });
+      toast("已刪除"); close(); await refresh(); }
+    catch (e) { toast(e.message, true); }
+  }}, "刪除"));
+  actions.append(
+    el("button", { class: "btn", onclick: () => close() }, "取消"),
+    el("button", { class: "btn primary", onclick: save }, isNew ? "建立專案" : "儲存變更"));
+
+  const editable = isNew ? canCreate() : canEdit(d.id);
+  if (!editable) {
+    frm.querySelectorAll("input,select,textarea,button").forEach(x => x.disabled = true);
+    actions.querySelectorAll(".primary,.danger").forEach(b => b.remove());
+    actions.prepend(el("span", { style: "margin-right:auto;color:var(--ink2);font-size:12.5px" },
+      "唯讀(無編輯權限,可向管理者申請)"));
+  }
+  const modal = el("div", { class: "modal" },
+    el("h2", {}, isNew ? `新增專案(${S.year} 年度)` : (editable ? "編輯專案" : "檢視專案")),
+    frm);
+  if (!isNew && S.auth.enabled && isAdmin()) modal.append(buildEditorsSection(d));
+  modal.append(actions);
+  const overlay = el("div", { class: "overlay",
+    onclick: (ev) => { if (ev.target === overlay) close(); } }, modal);
+  document.body.append(overlay);
+  const close = () => overlay.remove();
+  if (editable) f.name.focus();
+
+  async function save() {
+    const payload = {
+      year: d.year, name: f.name.value.trim(), status: f.status.value,
+      contract_no: f.contract_no.value.trim(), part_no: f.part_no.value.trim(),
+      so_number: f.so_number.value.trim(),
+      start_date: f.start_date.value || null, end_date: f.end_date.value || null,
+      kickoff_date: f.kickoff_date.value || null,
+      awarded_amount: f.awarded_amount.value === "" ? null : Number(f.awarded_amount.value),
+      participants: f.participants.value.trim(), notes: f.notes.value.trim(),
+      budgets: [...budBox.querySelectorAll(".bud-row")].map(r => ({
+        year: Number(r.querySelector(".y").value),
+        amount: Number(r.querySelector(".a").value) || 0,
+      })).filter(b => b.year),
+    };
+    if (!payload.name) return toast("案名為必填", true);
+    try {
+      if (isNew) await api("/projects", { method: "POST", body: JSON.stringify(payload) });
+      else await api(`/projects/${d.id}`, { method: "PUT", body: JSON.stringify(payload) });
+      toast(isNew ? "已建立" : "已儲存");
+      close(); await refresh();
+    } catch (e) { toast(e.message, true); }
+  }
+}
+
+async function refresh() { await loadYears(); await loadProjects(); }
+
+/* ============================== 啟動 ============================== */
+(async function boot() {
+  try {
+    await waitBackend();
+    const cfg = await api("/auth/config");
+    S.auth = { enabled: cfg.auth_enabled, clientId: cfg.google_client_id };
+    if (S.auth.enabled) {
+      if (!getTok()) { renderUserChip(); applyPerms(); return renderLogin(); }
+      try { S.me = await api("/auth/me"); }
+      catch (_e) { return; }   // 401 已由 api() 導回登入
+    }
+    await enterApp();
+  } catch (e) { console.error(e); }
+})();
+</script>
+</body>
+</html>

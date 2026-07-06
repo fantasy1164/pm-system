@@ -1,0 +1,6 @@
+__pycache__/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+nohup.out
+.env

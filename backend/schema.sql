@@ -1,0 +1,72 @@
+-- 專案期程預算管理系統 資料庫 Schema
+-- 年度採民國紀年 (例: 115),日期一律 ISO 格式 (YYYY-MM-DD)
+
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+-- 使用者 (第四階段 OAuth 啟用後,新登入者預設 pending)
+CREATE TABLE IF NOT EXISTS users (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    email       TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL DEFAULT '',
+    role        TEXT NOT NULL DEFAULT 'dev'
+                CHECK (role IN ('admin', 'pm', 'dept_head', 'sales', 'dev')),
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'active', 'disabled')),
+    can_edit    INTEGER NOT NULL DEFAULT 0,   -- 全域編輯授權 (由管理者開啟)
+    created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+-- 專案總表 (對應試算表的一列)
+CREATE TABLE IF NOT EXISTS projects (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    year          INTEGER NOT NULL,               -- 所屬年度 (民國,例 115)
+    status        TEXT NOT NULL DEFAULT 'ongoing'
+                  CHECK (status IN ('ongoing', 'not_awarded', 'closed')),
+                  -- ongoing=進行中, not_awarded=未成案, closed=已結案
+    contract_no   TEXT NOT NULL DEFAULT '',       -- 契約號
+    part_no       TEXT NOT NULL DEFAULT '',       -- 料號
+    so_number     TEXT NOT NULL DEFAULT '',       -- SO number
+    name          TEXT NOT NULL,                  -- 案名
+    start_date    TEXT,                           -- 履約起 (YYYY-MM-DD)
+    end_date      TEXT,                           -- 履約迄 (YYYY-MM-DD)
+    participants  TEXT NOT NULL DEFAULT '',       -- 參與人員 (自由文字,逗號分隔)
+    awarded_amount INTEGER,                       -- 決標金額 (NULL=未決標)
+    kickoff_date  TEXT,                           -- 啟動會議日期
+    notes         TEXT NOT NULL DEFAULT '',       -- 備註
+    sort_order    INTEGER NOT NULL DEFAULT 0,     -- 表內排序
+    copied_from   INTEGER REFERENCES projects(id),-- 年度複製來源 (NULL=非複製)
+    deleted       INTEGER NOT NULL DEFAULT 0,     -- 軟刪除
+    created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_projects_year ON projects (year, deleted, sort_order);
+
+-- 各年度預估認列 (一個跨年度專案會有多筆)
+CREATE TABLE IF NOT EXISTS budget_allocations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    year        INTEGER NOT NULL,                 -- 認列年度 (民國)
+    amount      INTEGER NOT NULL DEFAULT 0,       -- 預估認列金額
+    UNIQUE (project_id, year)
+);
+
+-- 單一專案的編輯授權 (管理者指派;全域 can_edit=1 者不需逐案授權)
+CREATE TABLE IF NOT EXISTS project_editors (
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (project_id, user_id)
+);
+
+-- 異動紀錄
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor       TEXT NOT NULL,                    -- 操作者 email (登入功能上線前為 local-dev)
+    action      TEXT NOT NULL,                    -- create / update / delete
+    entity      TEXT NOT NULL,                    -- projects / users / ...
+    entity_id   INTEGER NOT NULL,
+    changes     TEXT NOT NULL DEFAULT '{}',       -- JSON: {欄位: [舊值, 新值]}
+    created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log (entity, entity_id);

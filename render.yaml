@@ -1,0 +1,36 @@
+# Render Blueprint:於 Render 選「New +」→「Blueprint」→ 指向本 repo 即自動建立服務
+# 標記 sync:false 的變數建立時會逐一要求你輸入 (機密不進 git)
+services:
+  - type: web
+    name: pm-system-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 --threads 8 --timeout 120 wsgi:app
+    envVars:
+      - key: PM_SYNC_ENABLED
+        value: "1"
+      - key: PM_DRIVE_MODE
+        value: "google"
+      - key: PM_AUTH_ENABLED
+        value: "1"
+      - key: PYTHON_VERSION
+        value: "3.12.6"
+      - key: PM_CORS_ORIGIN
+        sync: false   # 例: https://你的帳號.github.io
+      - key: PM_ADMIN_EMAIL
+        sync: false
+      - key: PM_JWT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false   # 「網頁應用程式」那顆 (登入用)
+      - key: GOOGLE_CLIENT_ID
+        sync: false   # 「電腦版」那顆 (Drive 備份用)
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: PM_DRIVE_FOLDER_ID
+        sync: false
+      # 首次部署時手動於 Render 介面加 PM_BOOTSTRAP=1,首備份成功後移除
