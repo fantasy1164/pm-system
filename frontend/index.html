@@ -21,7 +21,7 @@ input,select,textarea{font:inherit;color:var(--ink)}
 
 /* ---------- header ---------- */
 header{background:var(--panel);border-bottom:1px solid var(--line);
-  padding:10px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  padding:8px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;
   position:sticky;top:0;z-index:20}
 header h1{font-size:17px;font-weight:600;margin:0;color:var(--navy);letter-spacing:.02em}
 .year-tabs{display:flex;gap:4px;flex-wrap:wrap}
@@ -40,7 +40,7 @@ header h1{font-size:17px;font-weight:600;margin:0;color:var(--navy);letter-spaci
   border-radius:999px;padding:3px 10px;background:transparent}
 
 /* ---------- layout ---------- */
-main{padding:14px;max-width:1400px;margin:0 auto}
+main{padding:10px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .state-msg{padding:48px 16px;text-align:center;color:var(--ink2)}
 
@@ -111,12 +111,26 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 
 /* ---------- mobile ---------- */
 @media (max-width:640px){
-  header{padding:8px 10px;gap:8px}
-  header h1{font-size:15px;width:100%}
-  main{padding:8px}
+  header{padding:6px 8px;gap:6px}
+  header h1{font-size:14.5px}
+  .btn,.year-tab{padding:4px 10px;font-size:13.5px}
+  .view-toggle button{padding:4px 10px;font-size:13.5px}
+  main{padding:5px}
+  .panel{border-radius:8px}
   .g-names{flex-basis:118px}
   .g-name .nm{font-size:12px}
   .frm{grid-template-columns:1fr}
+  .overlay{padding:8px 6px}
+  .modal{padding:14px 14px 16px}
+}
+/* 手機橫屏:垂直空間極省 */
+@media (max-height:520px){
+  header{padding:3px 8px;gap:6px}
+  header h1{font-size:13px}
+  .btn,.year-tab,.view-toggle button{padding:2px 9px;font-size:12.5px}
+  .user-chip{font-size:11.5px;padding:2px 8px}
+  main{padding:4px}
+  th,td{padding:5px 8px}
 }
 @media (prefers-reduced-motion:reduce){ *{transition:none!important} }
 </style>
@@ -145,7 +159,7 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 <script>
 "use strict";
 /* ============================== 設定與狀態 ============================== */
-// 部署後改這一行:填入你的 Render 服務網址 (結尾 /api)
+// 正式環境 (GitHub Pages) 自動連 Render;本機開發連 localhost
 const PROD_API = "https://pm-system-api.onrender.com/api";
 const API = localStorage.getItem("pm_api") ||
   (location.hostname.endsWith("github.io") ? PROD_API : "http://127.0.0.1:5000/api");
@@ -446,7 +460,9 @@ function renderGantt() {
   const px = S.pxPerDay;
   const totalDays = Math.round((hi - lo) / DAY);
   const W = Math.ceil(totalDays * px);
-  const HEAD = 34, ROW = 44;
+  // 橫屏手機等矮視窗:壓縮列高與表頭,一屏塞進更多專案
+  const short = window.innerHeight < 520;
+  const HEAD = short ? 26 : 34, ROW = short ? 32 : 44;
   const H = HEAD + dated.length * ROW;
   const X = (ms) => Math.round((ms - lo) / DAY * px);
 
@@ -463,7 +479,7 @@ function renderGantt() {
     svg += `<line x1="${X(t)}" y1="0" x2="${X(t)}" y2="${H}" stroke="#E2E1DA" stroke-width="1"/>`;
     const label = `${y-1911}/${String(m+1).padStart(2,"0")}`;
     if (X(next) - X(t) > 34)
-      svg += `<text x="${X(t)+4}" y="21" font-size="11" fill="#5B6572">${label}</text>`;
+      svg += `<text x="${X(t)+4}" y="${HEAD-9}" font-size="11" fill="#5B6572">${label}</text>`;
     t = next;
   }
   svg += `<line x1="0" y1="${HEAD}" x2="${W}" y2="${HEAD}" stroke="#E2E1DA"/>`;
@@ -476,13 +492,14 @@ function renderGantt() {
   dated.forEach((p, i) => {
     const x = X(utc(p.start_date));
     const w = Math.max(X(utc(p.end_date)) + Math.round(px) - x, 4); // 含迄日整天
-    const y = HEAD + i * ROW + 11, h = 22;
+    const h = short ? 16 : 22;
+    const y = HEAD + i * ROW + Math.round((ROW - h) / 2);
     const fill = BAR_FILL[p.status] || "#0F766E";
     const dash = p.status === "not_awarded" ? ` stroke="#B45309" stroke-width="1.5" stroke-dasharray="5 3"` : "";
     const op = p.status === "not_awarded" ? "0.55" : (p.status === "closed" ? "0.7" : "0.92");
     svg += `<g class="bar" data-id="${p.id}" style="cursor:pointer">`;
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="${fill}" opacity="${op}"${dash}/>`;
-    if (w > 74)
+    if (w > 74 && !short)
       svg += `<text x="${x+8}" y="${y+15}" font-size="11" fill="#fff">${p.duration_days} 天</text>`;
     if (p.kickoff_date) {
       const kx = X(utc(p.kickoff_date)) + px/2;
@@ -503,11 +520,15 @@ function renderGantt() {
 
   // 左側名稱欄
   const names = el("div", { class: "g-names" },
-    el("div", { class: "g-head" }, `${dated.length} 件專案`));
+    el("div", { class: "g-head", style: `height:${HEAD}px` }, `${dated.length} 件專案`));
   for (const p of dated) {
-    names.append(el("div", { class: "g-name", onclick: () => openModal(p) },
-      el("div", { class: "nm", title: p.name }, p.name),
-      el("div", { class: "sub" }, `${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}`)));
+    const nameEl = el("div", { class: "g-name", style: `height:${ROW}px`,
+      onclick: () => openModal(p) },
+      el("div", { class: "nm", title: p.name }, p.name));
+    if (!short)
+      nameEl.append(el("div", { class: "sub" },
+        `${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}`));
+    names.append(nameEl);
   }
 
   const scroll = el("div", { class: "g-scroll" });
@@ -728,6 +749,15 @@ function openModal(p) {
 }
 
 async function refresh() { await loadYears(); await loadProjects(); }
+
+/* 視窗尺寸/轉向改變時重繪目前視圖 (橫豎屏切換即時適應) */
+let resizeT = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => {
+    if (S.projects.length && (S.view === "gantt" || S.view === "table")) render();
+  }, 200);
+});
 
 /* ============================== 啟動 ============================== */
 (async function boot() {
