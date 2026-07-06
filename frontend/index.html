@@ -146,7 +146,7 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 "use strict";
 /* ============================== 設定與狀態 ============================== */
 // 部署後改這一行:填入你的 Render 服務網址 (結尾 /api)
-const PROD_API = "https://REPLACE-WITH-YOUR-SERVICE.onrender.com/api";
+const PROD_API = "https://pm-system-api.onrender.com/api";
 const API = localStorage.getItem("pm_api") ||
   (location.hostname.endsWith("github.io") ? PROD_API : "http://127.0.0.1:5000/api");
 const S = {
