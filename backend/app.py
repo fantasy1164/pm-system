@@ -154,8 +154,18 @@ def fetch_project(db, pid):
 # -------------------------------------------------------------------- CORS
 @app.after_request
 def add_cors(resp):
-    resp.headers["Access-Control-Allow-Origin"] = os.environ.get(
-        "PM_CORS_ORIGIN", "*")  # 上線後改為 GitHub Pages 網域
+    # PM_CORS_ORIGIN 支援逗號分隔多來源,例:
+    #   https://xxx.github.io,http://localhost:8000
+    # 回應時回傳「與請求相符的那一個」;CORS 只是瀏覽器端防線,
+    # 真正的存取控制在 JWT,允許 localhost 不影響安全性
+    allowed = [o.strip() for o in
+               os.environ.get("PM_CORS_ORIGIN", "*").split(",") if o.strip()]
+    origin = request.headers.get("Origin", "")
+    if "*" in allowed:
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+    elif origin in allowed:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User, Authorization"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     resp.headers["Access-Control-Expose-Headers"] = "X-New-Token"
