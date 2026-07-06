@@ -419,6 +419,21 @@ def auth_google():
                             "error": "帳號已建立,請等待管理者核准"}), 403
         row = db.execute("SELECT * FROM users WHERE id = ?",
                          (cur.lastrowid,)).fetchone()
+    # PM_ADMIN_EMAIL 為持續有效的權威設定:符合者確保為 active admin
+    # (涵蓋「先以一般身分建號、之後才設定/修正 ADMIN_EMAIL」的情況)
+    if (info["email"] == auth_core.ADMIN_EMAIL and
+            (row["role"] != "admin" or row["status"] != "active")):
+        db.execute("UPDATE users SET role='admin', status='active',"
+                   " can_edit=1, updated_at=datetime('now','localtime')"
+                   " WHERE id = ?", (row["id"],))
+        write_audit(db, "update", "users", row["id"],
+                    {"reason": "PM_ADMIN_EMAIL 自我修復晉升",
+                     "role": [row["role"], "admin"],
+                     "status": [row["status"], "active"]})
+        db.commit()
+        BACKUP.mark_dirty()
+        row = db.execute("SELECT * FROM users WHERE id = ?",
+                         (row["id"],)).fetchone()
     if row["status"] == "pending":
         return jsonify({"code": "pending", "error": "尚待管理者核准"}), 403
     if row["status"] == "disabled":

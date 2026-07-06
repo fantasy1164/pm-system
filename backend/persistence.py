@@ -238,17 +238,31 @@ class BackupManager:
         self._pending = False             # 尚有未備份變更 (備份成功才清除)
         self._stop = threading.Event()
         self._lock = threading.Lock()     # 保護 _pending
+        self._thread = None
         self.last_backup = None
         self.last_error = None
 
-    def start(self):
+    def start(self, register_signals=True):
+        """冪等:執行緒活著就不重複啟動。
+        重要:gunicorn 會 fork worker,而執行緒不會被 fork 複製——
+        因此必須在 worker 內 (gunicorn.conf.py 的 post_fork) 再呼叫一次;
+        register_signals=False 供 gunicorn 路徑使用 (兜底改掛 worker 退出鉤子)。"""
         if not SYNC_ENABLED:
             return
-        threading.Thread(target=self._loop, daemon=True,
-                         name="backup-loop").start()
-        signal.signal(signal.SIGTERM, self._on_term)
-        signal.signal(signal.SIGINT, self._on_term)
-        log.info("備份執行緒啟動 (debounce %.0fs, 保留 %d 份)", DEBOUNCE, KEEP)
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name="backup-loop")
+        self._thread.start()
+        if register_signals:
+            try:
+                signal.signal(signal.SIGTERM, self._on_term)
+                signal.signal(signal.SIGINT, self._on_term)
+            except ValueError:
+                pass  # 非主執行緒無法註冊 signal,改由外部鉤子兜底
+        log.info("備份執行緒啟動 (pid %d, debounce %.0fs, 保留 %d 份)",
+                 os.getpid(), DEBOUNCE, KEEP)
 
     def mark_dirty(self):
         if not SYNC_ENABLED:
