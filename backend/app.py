@@ -249,7 +249,8 @@ def list_projects():
     if year:
         sql += " AND year = ?"
         args.append(year)
-    sql += " ORDER BY sort_order, id"
+    # 依履約起始日排序 (先執行的在上面);未填日期者排最後,同日以 id 穩定排序
+    sql += " ORDER BY (start_date IS NULL), start_date, id"
     rows = db.execute(sql, args).fetchall()
     ids = [r["id"] for r in rows]
     budget_map, ms_map = {}, {}
