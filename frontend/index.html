@@ -4,12 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>專案期程預算總表</title>
+<script>
+document.documentElement.dataset.theme =
+  localStorage.getItem("pm_theme") ||
+  (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+</script>
 <style>
 :root{
-  --bg:#F6F6F2; --panel:#FFFFFF; --ink:#1F2933; --ink2:#5B6572; --line:#E2E1DA;
+  --bg:#F6F6F2; --panel:#FFFFFF; --panel2:#FAFAF7; --ink:#1F2933; --ink2:#5B6572;
+  --line:#E2E1DA; --line2:#EFEEE8; --hover:#F4F8F7; --chip:#F3F3EF;
   --teal:#0F766E; --teal-bg:#D9EFEC; --amber:#B45309; --amber-bg:#FBEED8;
   --gray:#6B7280; --gray-bg:#ECECEA; --red:#C2382C; --navy:#1F3A5F;
   --radius:8px;
+}
+html[data-theme="dark"]{
+  --bg:#101317; --panel:#181C21; --panel2:#1E242B; --ink:#E6E9ED; --ink2:#98A2AE;
+  --line:#2B323B; --line2:#232930; --hover:#1D2B2A; --chip:#232930;
+  --teal:#2DB8A6; --teal-bg:#123B37; --amber:#F0A63A; --amber-bg:#3A2A12;
+  --gray:#9CA3AF; --gray-bg:#2A2F36; --red:#F87171; --navy:#9DBCE8;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -36,6 +48,9 @@ header h1{font-size:17px;font-weight:600;margin:0;color:var(--navy);letter-spaci
   padding:5px 12px;color:var(--ink)}
 .btn.primary{background:var(--teal);border-color:var(--teal);color:#fff}
 .btn.danger{background:#fff;border-color:var(--red);color:var(--red)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+  margin-right:5px;flex:0 0 auto;vertical-align:baseline}
+.g-name .nm{display:flex;align-items:center}
 .user-chip{font-size:12.5px;color:var(--ink2);border:1px dashed var(--line);
   border-radius:999px;padding:3px 10px;background:transparent}
 
@@ -47,10 +62,10 @@ main{padding:10px}
 /* ---------- table view ---------- */
 .tbl-wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;min-width:960px;font-size:13.5px}
-th{position:sticky;top:0;background:#FAFAF7;color:var(--ink2);font-weight:500;
+th{position:sticky;top:0;background:var(--panel2);color:var(--ink2);font-weight:500;
   text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-td{padding:8px 10px;border-bottom:1px solid #EFEEE8;vertical-align:top;white-space:nowrap}
-tr.row:hover td{background:#F4F8F7;cursor:pointer}
+td{padding:8px 10px;border-bottom:1px solid var(--line2);vertical-align:top;white-space:nowrap}
+tr.row:hover td{background:var(--hover);cursor:pointer}
 td.name{white-space:normal;min-width:180px;font-weight:500}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
 .badge{display:inline-block;font-size:12px;border-radius:999px;padding:1px 9px}
@@ -58,7 +73,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .badge.not_awarded{background:var(--amber-bg);color:var(--amber)}
 .badge.closed{background:var(--gray-bg);color:var(--gray)}
 .budget-chip{display:inline-block;font-size:12px;color:var(--ink2);
-  background:#F3F3EF;border-radius:4px;padding:0 6px;margin:1px 2px 1px 0;
+  background:var(--chip);border-radius:4px;padding:0 6px;margin:1px 2px 1px 0;
   font-variant-numeric:tabular-nums}
 td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 
@@ -68,12 +83,12 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 .legend{display:flex;gap:14px;font-size:12.5px;color:var(--ink2);flex-wrap:wrap}
 .legend i{display:inline-block;width:14px;height:9px;border-radius:2px;margin-right:4px;vertical-align:baseline}
 .gantt{display:flex;align-items:stretch}
-.g-names{flex:0 0 190px;border-right:1px solid var(--line);background:#FAFAF7}
+.g-names{flex:0 0 190px;border-right:1px solid var(--line);background:var(--panel2)}
 .g-names .g-head{height:34px;border-bottom:1px solid var(--line);display:flex;
   align-items:center;padding:0 10px;font-size:12px;color:var(--ink2)}
-.g-name{height:44px;border-bottom:1px solid #EFEEE8;padding:5px 10px;cursor:pointer;
+.g-name{height:44px;border-bottom:1px solid var(--line2);padding:5px 10px;cursor:pointer;
   display:flex;flex-direction:column;justify-content:center;overflow:hidden}
-.g-name:hover{background:#F4F8F7}
+.g-name:hover{background:var(--hover)}
 .g-name .nm{font-size:13px;font-weight:500;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .g-name .sub{font-size:11.5px;color:var(--ink2);white-space:nowrap;
@@ -91,10 +106,12 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 .frm label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--ink2)}
 .frm label.full{grid-column:1/-1}
 .frm input,.frm select,.frm textarea{border:1px solid var(--line);border-radius:6px;
-  padding:6px 8px;background:#fff}
+  padding:6px 8px;background:var(--panel);color:var(--ink)}
 .frm textarea{resize:vertical;min-height:52px}
 .bud-row{display:flex;gap:8px;margin-bottom:6px;align-items:center}
-.bud-row input{border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+.bud-row input{border:1px solid var(--line);border-radius:6px;padding:5px 8px;
+  background:var(--panel);color:var(--ink)}
+select{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
 .bud-row input.y{width:84px}
 .bud-row input.a{flex:1}
 .bud-row button{border:0;background:none;color:var(--red);font-size:16px;padding:0 4px}
@@ -103,7 +120,7 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 
 /* ---------- toast ---------- */
 #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
-  background:var(--ink);color:#fff;padding:8px 18px;border-radius:999px;
+  background:#1F2933;color:#fff;padding:8px 18px;border-radius:999px;
   font-size:13.5px;opacity:0;transition:opacity .25s;z-index:99;pointer-events:none;
   max-width:90vw}
 #toast.show{opacity:.94}
@@ -147,6 +164,7 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
     <button id="vUsers" style="display:none">使用者</button>
   </div>
   <button class="btn primary" id="btnAdd">＋ 新增專案</button>
+  <button class="btn" id="themeBtn" title="切換深/淺色主題">🌓</button>
   <button class="user-chip" id="userChip" title="點擊設定操作者名稱"></button>
 </header>
 
@@ -173,7 +191,20 @@ const getTok = () => sessionStorage.getItem("pm_token");
 const setTok = (t) => t ? sessionStorage.setItem("pm_token", t)
                         : sessionStorage.removeItem("pm_token");
 const STATUS_TXT = { ongoing:"進行中", not_awarded:"未成案", closed:"已結案" };
-const BAR_FILL   = { ongoing:"#0F766E", not_awarded:"#E5B063", closed:"#9AA1AA" };
+// 專案調色盤:以 id 對應,顏色跨裝置/重整穩定;已結案一律灰色 (視覺退場)
+const PALETTE = ["#0F766E","#2563EB","#B45309","#7C3AED","#C2410C","#0E7490",
+                 "#BE185D","#4D7C0F","#B91C1C","#6D28D9","#0369A1","#A16207"];
+const projColor = (p) => p.status === "closed"
+  ? "var(--gray)" : PALETTE[p.id % PALETTE.length];
+/* ---- 主題 ---- */
+function applyTheme(mode) {
+  document.documentElement.dataset.theme = mode;
+  localStorage.setItem("pm_theme", mode);
+}
+document.addEventListener("DOMContentLoaded", () => {
+  $("#themeBtn").addEventListener("click", () =>
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+});
 
 /* ============================== 小工具 ============================== */
 const $ = (sel) => document.querySelector(sel);
@@ -475,18 +506,18 @@ function renderGantt() {
     const next = Date.UTC(y, m + 1, 1);
     const q = Math.floor(m / 3);
     if (q % 2 === 1)
-      svg += `<rect x="${X(t)}" y="${HEAD}" width="${X(next)-X(t)}" height="${H-HEAD}" fill="#000" opacity="0.025"/>`;
-    svg += `<line x1="${X(t)}" y1="0" x2="${X(t)}" y2="${H}" stroke="#E2E1DA" stroke-width="1"/>`;
+      svg += `<rect x="${X(t)}" y="${HEAD}" width="${X(next)-X(t)}" height="${H-HEAD}" fill="var(--ink)" opacity="0.03"/>`;
+    svg += `<line x1="${X(t)}" y1="0" x2="${X(t)}" y2="${H}" stroke="var(--line)" stroke-width="1"/>`;
     const label = `${y-1911}/${String(m+1).padStart(2,"0")}`;
     if (X(next) - X(t) > 34)
-      svg += `<text x="${X(t)+4}" y="${HEAD-9}" font-size="11" fill="#5B6572">${label}</text>`;
+      svg += `<text x="${X(t)+4}" y="${HEAD-9}" font-size="11" fill="var(--ink2)">${label}</text>`;
     t = next;
   }
-  svg += `<line x1="0" y1="${HEAD}" x2="${W}" y2="${HEAD}" stroke="#E2E1DA"/>`;
+  svg += `<line x1="0" y1="${HEAD}" x2="${W}" y2="${HEAD}" stroke="var(--line)"/>`;
 
   // 橫向列線
   for (let i = 1; i <= dated.length; i++)
-    svg += `<line x1="0" y1="${HEAD+i*ROW}" x2="${W}" y2="${HEAD+i*ROW}" stroke="#EFEEE8"/>`;
+    svg += `<line x1="0" y1="${HEAD+i*ROW}" x2="${W}" y2="${HEAD+i*ROW}" stroke="var(--line2)"/>`;
 
   // 專案長條
   dated.forEach((p, i) => {
@@ -494,16 +525,17 @@ function renderGantt() {
     const w = Math.max(X(utc(p.end_date)) + Math.round(px) - x, 4); // 含迄日整天
     const h = short ? 16 : 22;
     const y = HEAD + i * ROW + Math.round((ROW - h) / 2);
-    const fill = BAR_FILL[p.status] || "#0F766E";
-    const dash = p.status === "not_awarded" ? ` stroke="#B45309" stroke-width="1.5" stroke-dasharray="5 3"` : "";
-    const op = p.status === "not_awarded" ? "0.55" : (p.status === "closed" ? "0.7" : "0.92");
+    const fill = projColor(p);
+    const dash = p.status === "not_awarded"
+      ? ` stroke="${fill}" stroke-width="1.5" stroke-dasharray="5 3"` : "";
+    const op = p.status === "not_awarded" ? "0.4" : (p.status === "closed" ? "0.65" : "0.92");
     svg += `<g class="bar" data-id="${p.id}" style="cursor:pointer">`;
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="${fill}" opacity="${op}"${dash}/>`;
     if (w > 74 && !short)
       svg += `<text x="${x+8}" y="${y+15}" font-size="11" fill="#fff">${p.duration_days} 天</text>`;
     if (p.kickoff_date) {
       const kx = X(utc(p.kickoff_date)) + px/2;
-      svg += `<path d="M ${kx} ${y-6} l 5 6 l -5 6 l -5 -6 z" fill="#1F3A5F"><title>啟動會議 ${rocDate(p.kickoff_date)}</title></path>`;
+      svg += `<path d="M ${kx} ${y-6} l 5 6 l -5 6 l -5 -6 z" fill="var(--navy)"><title>啟動會議 ${rocDate(p.kickoff_date)}</title></path>`;
     }
     svg += `<title>${esc(p.name)}\n${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}(${p.duration_days} 天)\n${STATUS_TXT[p.status]}${p.awarded_amount!=null ? "\n決標 " + fmtAmt(p.awarded_amount) : ""}</title></g>`;
   });
@@ -512,8 +544,8 @@ function renderGantt() {
   const now = utc(todayISO());
   if (now >= lo && now <= hi) {
     const tx = X(now);
-    svg += `<line x1="${tx}" y1="0" x2="${tx}" y2="${H}" stroke="#C2382C" stroke-width="1.5"/>`;
-    svg += `<rect x="${tx+3}" y="4" width="34" height="16" rx="3" fill="#C2382C"/>`;
+    svg += `<line x1="${tx}" y1="0" x2="${tx}" y2="${H}" stroke="var(--red)" stroke-width="1.5"/>`;
+    svg += `<rect x="${tx+3}" y="4" width="34" height="16" rx="3" fill="var(--red)"/>`;
     svg += `<text x="${tx+20}" y="16" font-size="10.5" fill="#fff" text-anchor="middle">今天</text>`;
   }
   svg += `</svg>`;
@@ -522,9 +554,11 @@ function renderGantt() {
   const names = el("div", { class: "g-names" },
     el("div", { class: "g-head", style: `height:${HEAD}px` }, `${dated.length} 件專案`));
   for (const p of dated) {
+    const dot = el("i", { class: "dot" });
+    dot.style.background = projColor(p);
     const nameEl = el("div", { class: "g-name", style: `height:${ROW}px`,
       onclick: () => openModal(p) },
-      el("div", { class: "nm", title: p.name }, p.name));
+      el("div", { class: "nm", title: p.name }, dot, p.name));
     if (!short)
       nameEl.append(el("div", { class: "sub" },
         `${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}`));
@@ -544,9 +578,10 @@ function renderGantt() {
     el("button", { class: "btn", onclick: () => zoom(-0.5) }, "－"),
     el("button", { class: "btn", onclick: () => zoom(+0.5) }, "＋"),
     el("span", { class: "legend" },
-      legendItem(BAR_FILL.ongoing, "進行中"),
-      legendItem(BAR_FILL.not_awarded, "未成案"),
-      legendItem(BAR_FILL.closed, "已結案"),
+      el("span", {}, "顏色=各專案"),
+      legendItem(null, "實心=進行中", "solid"),
+      legendItem(null, "虛線=未成案", "dash"),
+      legendItem("var(--gray)", "灰=已結案", "solid"),
       el("span", {}, "◆ 啟動會議")),
     undated.length ? el("span", { class: "legend" },
       `另有 ${undated.length} 件未填起迄日期,僅顯示於總表`) : "");
@@ -558,9 +593,13 @@ function renderGantt() {
   if (now >= lo && now <= hi)
     scroll.scrollLeft = Math.max(0, X(now) - scroll.clientWidth * 0.35);
 }
-function legendItem(color, txt) {
+function legendItem(color, txt, kind) {
   const s = el("span", {}, el("i", {}), txt);
-  s.querySelector("i").style.background = color;
+  const i = s.querySelector("i");
+  if (kind === "dash") {
+    i.style.background = "transparent";
+    i.style.border = "1.5px dashed var(--ink2)";
+  } else i.style.background = color || "var(--teal)";
   return s;
 }
 function zoom(dv) {
