@@ -88,6 +88,9 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .yc4{color:var(--yc4);background:color-mix(in srgb, var(--yc4) 13%, transparent)}
 .yc5{color:var(--yc5);background:color-mix(in srgb, var(--yc5) 13%, transparent)}
 .budget-chip.cur{border-color:currentColor}
+tfoot td{position:sticky;bottom:0;background:var(--panel2);
+  border-top:2px solid var(--line);border-bottom:0;font-weight:600}
+tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
 td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 
 /* ---------- gantt ---------- */
@@ -479,7 +482,24 @@ function renderTable() {
       el("td", { class: "notes" }, p.notes || ""),
     ));
   }
-  const wrap = el("div", { class: "tbl-wrap" }, el("table", {}, thead, tbody));
+  // 小計:決標金額加總、各年度認列分項加總
+  const awardedSum = S.projects.reduce(
+    (s, p) => s + (p.awarded_amount ?? 0), 0);
+  const byYear = {};
+  for (const p of S.projects)
+    for (const b of p.budgets)
+      byYear[b.year] = (byYear[b.year] || 0) + (b.amount || 0);
+  const yearChips = Object.keys(byYear).map(Number).sort().map(y =>
+    el("span", { class: `budget-chip yc${y % 6}` + (y === S.year ? " cur" : "") },
+      `${y}:${fmtAmt(byYear[y])}`));
+  const tfoot = el("tfoot", {}, el("tr", {},
+    el("td", { class: "lbl", colspan: "8" }, `小計(${S.projects.length} 案)`),
+    el("td", { class: "num" }, fmtAmt(awardedSum)),
+    el("td", {}, ...yearChips),
+    el("td", {})));
+
+  const wrap = el("div", { class: "tbl-wrap" },
+    el("table", {}, thead, tbody, tfoot));
   $("#content").replaceChildren(wrap);
 }
 
