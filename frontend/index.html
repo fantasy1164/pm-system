@@ -537,8 +537,17 @@ function renderGantt() {
       const kx = X(utc(p.kickoff_date)) + px/2;
       svg += `<path d="M ${kx} ${y-6} l 5 6 l -5 6 l -5 -6 z" fill="var(--navy)"><title>啟動會議 ${rocDate(p.kickoff_date)}</title></path>`;
     }
-    // 里程碑:鏤空菱形鑲在長條上 (底=背景色、框=專案色),深淺主題皆醒目
+    // 里程碑:鏤空菱形鑲在長條上 (底=背景色、框=專案色),
+    // 標籤「M/D 名稱」直接印在圖上;上下兩條車道交錯防疊字
     const msR = short ? 4.5 : 6;
+    const msFont = short ? 9 : 10.5;
+    const lanes = { top: [], bottom: [] };   // 各車道已占用的 x 區間
+    if (p.kickoff_date) {                    // 啟動會議菱形占用上車道
+      const kx0 = X(utc(p.kickoff_date)) + px / 2;
+      lanes.top.push([kx0 - 8, kx0 + 8]);
+    }
+    const estW = (s) => [...s].reduce((w, c) =>
+      w + (c.charCodeAt(0) > 255 ? msFont : msFont * 0.56), 0);
     for (const m of (p.milestones || [])) {
       const mms = utc(m.date);
       if (mms < lo || mms > hi) continue;
@@ -547,6 +556,18 @@ function renderGantt() {
            + ` fill="var(--panel)" stroke="${fill}" stroke-width="2">`
            + `<title>◇ ${esc(m.name)}
 ${rocDate(m.date)}</title></path>`;
+      const [, mo, dd] = m.date.split("-");
+      const label = `${Number(mo)}/${Number(dd)} ${m.name}`;
+      const w2 = estW(label) / 2;
+      const lx = Math.max(2 + w2, Math.min(W - 2 - w2, mx));   // 邊緣內縮
+      const span = [lx - w2 - 5, lx + w2 + 5];
+      const fits = (lane) => lane.every(([a, b]) => span[1] < a || span[0] > b);
+      let laneY = null;
+      if (fits(lanes.top)) { lanes.top.push(span); laneY = y - 3; }
+      else if (fits(lanes.bottom)) { lanes.bottom.push(span); laneY = y + h + msFont + 1; }
+      if (laneY !== null)
+        svg += `<text x="${lx}" y="${laneY}" font-size="${msFont}" font-weight="500"`
+             + ` text-anchor="middle" fill="${fill}">${esc(label)}</text>`;
     }
     svg += `<title>${esc(p.name)}\n${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}(${p.duration_days} 天)\n${STATUS_TXT[p.status]}${p.awarded_amount!=null ? "\n決標 " + fmtAmt(p.awarded_amount) : ""}</title></g>`;
   });
