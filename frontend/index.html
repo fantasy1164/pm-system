@@ -17,7 +17,13 @@ document.documentElement.dataset.theme =
   --gray:#6B7280; --gray-bg:#ECECEA; --red:#C2382C; --navy:#1F3A5F;
   --radius:8px;
 }
+:root{
+  --yc0:#0E7490; --yc1:#B45309; --yc2:#7C3AED;
+  --yc3:#BE185D; --yc4:#4D7C0F; --yc5:#2563EB;
+}
 html[data-theme="dark"]{
+  --yc0:#4CC3DD; --yc1:#F0A63A; --yc2:#B79CF7;
+  --yc3:#F472B6; --yc4:#9CCC5A; --yc5:#7DA7F8;
   --bg:#101317; --panel:#181C21; --panel2:#1E242B; --ink:#E6E9ED; --ink2:#98A2AE;
   --line:#2B323B; --line2:#232930; --hover:#1D2B2A; --chip:#232930;
   --teal:#2DB8A6; --teal-bg:#123B37; --amber:#F0A63A; --amber-bg:#3A2A12;
@@ -74,7 +80,14 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .badge.closed{background:var(--gray-bg);color:var(--gray)}
 .budget-chip{display:inline-block;font-size:12px;color:var(--ink2);
   background:var(--chip);border-radius:4px;padding:0 6px;margin:1px 2px 1px 0;
-  font-variant-numeric:tabular-nums}
+  font-variant-numeric:tabular-nums;border:1px solid transparent;font-weight:500}
+.yc0{color:var(--yc0);background:color-mix(in srgb, var(--yc0) 13%, transparent)}
+.yc1{color:var(--yc1);background:color-mix(in srgb, var(--yc1) 13%, transparent)}
+.yc2{color:var(--yc2);background:color-mix(in srgb, var(--yc2) 13%, transparent)}
+.yc3{color:var(--yc3);background:color-mix(in srgb, var(--yc3) 13%, transparent)}
+.yc4{color:var(--yc4);background:color-mix(in srgb, var(--yc4) 13%, transparent)}
+.yc5{color:var(--yc5);background:color-mix(in srgb, var(--yc5) 13%, transparent)}
+.budget-chip.cur{border-color:currentColor}
 td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 
 /* ---------- gantt ---------- */
@@ -448,7 +461,10 @@ function renderTable() {
   const tbody = el("tbody");
   for (const p of S.projects) {
     const budgets = el("td", {}, ...p.budgets.map(b =>
-      el("span", { class: "budget-chip" }, `${b.year}:${fmtAmt(b.amount)}`)));
+      el("span", { class: `budget-chip yc${b.year % 6}` +
+                          (b.year === S.year ? " cur" : ""),
+        title: b.year === S.year ? "目前檢視年度" : "" },
+        `${b.year}:${fmtAmt(b.amount)}`)));
     tbody.append(el("tr", { class: "row", onclick: () => openModal(p) },
       el("td", {}, el("span", { class: "badge " + p.status }, STATUS_TXT[p.status] || p.status)),
       el("td", { class: "name" }, p.name),
