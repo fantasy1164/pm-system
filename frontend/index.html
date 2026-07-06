@@ -537,6 +537,17 @@ function renderGantt() {
       const kx = X(utc(p.kickoff_date)) + px/2;
       svg += `<path d="M ${kx} ${y-6} l 5 6 l -5 6 l -5 -6 z" fill="var(--navy)"><title>啟動會議 ${rocDate(p.kickoff_date)}</title></path>`;
     }
+    // 里程碑:鏤空菱形鑲在長條上 (底=背景色、框=專案色),深淺主題皆醒目
+    const msR = short ? 4.5 : 6;
+    for (const m of (p.milestones || [])) {
+      const mms = utc(m.date);
+      if (mms < lo || mms > hi) continue;
+      const mx = X(mms) + px / 2, cy = y + h / 2;
+      svg += `<path d="M ${mx} ${cy - msR} L ${mx + msR} ${cy} L ${mx} ${cy + msR} L ${mx - msR} ${cy} Z"`
+           + ` fill="var(--panel)" stroke="${fill}" stroke-width="2">`
+           + `<title>◇ ${esc(m.name)}
+${rocDate(m.date)}</title></path>`;
+    }
     svg += `<title>${esc(p.name)}\n${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}(${p.duration_days} 天)\n${STATUS_TXT[p.status]}${p.awarded_amount!=null ? "\n決標 " + fmtAmt(p.awarded_amount) : ""}</title></g>`;
   });
 
@@ -567,6 +578,13 @@ function renderGantt() {
 
   const scroll = el("div", { class: "g-scroll" });
   scroll.innerHTML = svg;
+  // 滾輪上下 → 甘特圖左右捲動 (時間軸才是主要瀏覽方向)
+  scroll.addEventListener("wheel", (ev) => {
+    if (Math.abs(ev.deltaY) > Math.abs(ev.deltaX)) {
+      ev.preventDefault();
+      scroll.scrollLeft += ev.deltaY;
+    }
+  }, { passive: false });
   scroll.addEventListener("click", (ev) => {
     const g = ev.target.closest("g.bar");
     if (!g) return;
@@ -582,7 +600,8 @@ function renderGantt() {
       legendItem(null, "實心=進行中", "solid"),
       legendItem(null, "虛線=未成案", "dash"),
       legendItem("var(--gray)", "灰=已結案", "solid"),
-      el("span", {}, "◆ 啟動會議")),
+      el("span", {}, "◆ 啟動會議"),
+      el("span", {}, "◇ 里程碑")),
     undated.length ? el("span", { class: "legend" },
       `另有 ${undated.length} 件未填起迄日期,僅顯示於總表`) : "");
 
@@ -710,6 +729,17 @@ function openModal(p) {
   };
   (d.budgets || []).forEach(addBudRow);
 
+  const msBox = el("div");
+  const addMsRow = (m = { date: "", name: "" }) => {
+    const row = el("div", { class: "bud-row ms-row" },
+      el("input", { class: "y", type: "date", value: m.date, style: "width:150px" }),
+      el("input", { class: "a", placeholder: "里程碑名稱 (如 PDR、SAT驗收)", value: m.name }),
+      el("button", { type: "button", title: "移除",
+        onclick: (ev) => ev.target.closest(".bud-row").remove() }, "✕"));
+    msBox.append(row);
+  };
+  (d.milestones || []).forEach(addMsRow);
+
   const f = {};
   const frm = el("div", { class: "frm" });
   frm.append(
@@ -731,6 +761,8 @@ function openModal(p) {
     el("label", { class: "full" }, "參與人員(逗號分隔)", f.participants = el("input", { value: d.participants || "" })),
     el("label", { class: "full" }, "各年度預估認列", budBox,
       el("button", { class: "btn", type: "button", onclick: () => addBudRow() }, "＋ 加一個年度")),
+    el("label", { class: "full" }, "里程碑(顯示於甘特圖)", msBox,
+      el("button", { class: "btn", type: "button", onclick: () => addMsRow() }, "＋ 加一個里程碑")),
     el("label", { class: "full" }, "備註", f.notes = el("textarea", {}, d.notes || "")),
   );
 
@@ -776,6 +808,10 @@ function openModal(p) {
         year: Number(r.querySelector(".y").value),
         amount: Number(r.querySelector(".a").value) || 0,
       })).filter(b => b.year),
+      milestones: [...msBox.querySelectorAll(".ms-row")].map(r => ({
+        date: r.querySelector(".y").value,
+        name: r.querySelector(".a").value.trim(),
+      })).filter(m => m.date || m.name),
     };
     if (!payload.name) return toast("案名為必填", true);
     try {

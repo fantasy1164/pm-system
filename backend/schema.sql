@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE INDEX IF NOT EXISTS idx_projects_year ON projects (year, deleted, sort_order);
 
+-- 專案里程碑
+CREATE TABLE IF NOT EXISTS milestones (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    date        TEXT NOT NULL,                    -- YYYY-MM-DD
+    name        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ms_project ON milestones (project_id, date);
+
 -- 各年度預估認列 (一個跨年度專案會有多筆)
 CREATE TABLE IF NOT EXISTS budget_allocations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

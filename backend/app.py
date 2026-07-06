@@ -95,13 +95,16 @@ def parse_iso(s):
         return None
 
 
-def project_to_dict(row, budgets):
+def project_to_dict(row, budgets, milestones=()):
     d = dict(row)
     d.pop("deleted", None)
     start, end = parse_iso(d.get("start_date")), parse_iso(d.get("end_date"))
     d["duration_days"] = (end - start).days + 1 if start and end else None
     d["budgets"] = [
         {"year": b["year"], "amount": b["amount"]} for b in budgets
+    ]
+    d["milestones"] = [
+        {"date": m["date"], "name": m["name"]} for m in milestones
     ]
     return d
 
@@ -128,6 +131,27 @@ def validate_project(data, partial=False):
     return out, None
 
 
+def validate_milestones(ms):
+    """回傳 (清洗後 list, 錯誤或 None)"""
+    out = []
+    for m in ms or []:
+        d, n = (m.get("date") or "").strip(), (m.get("name") or "").strip()
+        if not d or parse_iso(d) is None:
+            return None, "里程碑日期格式須為 YYYY-MM-DD"
+        if not n:
+            return None, "里程碑名稱為必填"
+        out.append({"date": d, "name": n})
+    out.sort(key=lambda m: m["date"])
+    return out, None
+
+
+def upsert_milestones(db, project_id, ms):
+    db.execute("DELETE FROM milestones WHERE project_id = ?", (project_id,))
+    for m in ms:
+        db.execute("INSERT INTO milestones (project_id, date, name)"
+                   " VALUES (?, ?, ?)", (project_id, m["date"], m["name"]))
+
+
 def upsert_budgets(db, project_id, budgets):
     db.execute("DELETE FROM budget_allocations WHERE project_id = ?", (project_id,))
     for b in budgets or []:
@@ -148,7 +172,11 @@ def fetch_project(db, pid):
         "SELECT year, amount FROM budget_allocations"
         " WHERE project_id = ? ORDER BY year", (pid,)
     ).fetchall()
-    return project_to_dict(row, budgets)
+    ms = db.execute(
+        "SELECT date, name FROM milestones"
+        " WHERE project_id = ? ORDER BY date", (pid,)
+    ).fetchall()
+    return project_to_dict(row, budgets, ms)
 
 
 # -------------------------------------------------------------------- CORS
@@ -224,7 +252,7 @@ def list_projects():
     sql += " ORDER BY sort_order, id"
     rows = db.execute(sql, args).fetchall()
     ids = [r["id"] for r in rows]
-    budget_map = {}
+    budget_map, ms_map = {}, {}
     if ids:
         q = ",".join("?" * len(ids))
         for b in db.execute(
@@ -232,7 +260,13 @@ def list_projects():
             f" WHERE project_id IN ({q}) ORDER BY year", ids
         ):
             budget_map.setdefault(b["project_id"], []).append(b)
-    return jsonify([project_to_dict(r, budget_map.get(r["id"], [])) for r in rows])
+        for m in db.execute(
+            f"SELECT project_id, date, name FROM milestones"
+            f" WHERE project_id IN ({q}) ORDER BY date", ids
+        ):
+            ms_map.setdefault(m["project_id"], []).append(m)
+    return jsonify([project_to_dict(r, budget_map.get(r["id"], []),
+                                    ms_map.get(r["id"], [])) for r in rows])
 
 
 @app.get("/api/projects/<int:pid>")
@@ -259,6 +293,10 @@ def create_project():
     )
     pid = cur.lastrowid
     upsert_budgets(db, pid, data.get("budgets"))
+    ms, err = validate_milestones(data.get("milestones"))
+    if err:
+        return jsonify({"error": err}), 400
+    upsert_milestones(db, pid, ms)
     write_audit(db, "create", "projects", pid, {"new": fields})
     db.commit()
     BACKUP.mark_dirty()
@@ -297,6 +335,12 @@ def update_project(pid):
     if "budgets" in data:
         upsert_budgets(db, pid, data["budgets"])
         changes["budgets"] = ["(replaced)", data["budgets"]]
+    if "milestones" in data:
+        ms, err = validate_milestones(data["milestones"])
+        if err:
+            return jsonify({"error": err}), 400
+        upsert_milestones(db, pid, ms)
+        changes["milestones"] = ["(replaced)", ms]
     if changes:
         write_audit(db, "update", "projects", pid, changes)
     db.commit()
