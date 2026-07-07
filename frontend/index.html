@@ -459,21 +459,24 @@ function colResizer(opts) {
     e.preventDefault(); e.stopPropagation();
     const startX = e.clientX, startW = opts.get();
     h.classList.add("dragging");
+    document.body.style.userSelect = "none";
     try { h.setPointerCapture(e.pointerId); } catch (_e) { /* 舊環境無此 API */ }
+    // move/up 掛在 window:游標離開把手、甚至離開視窗都能持續追蹤
     const move = (ev) => {
       const w = Math.min(opts.max, Math.max(opts.min, startW + ev.clientX - startX));
       opts.set(w);
     };
     const up = () => {
       h.classList.remove("dragging");
-      h.removeEventListener("pointermove", move);
-      h.removeEventListener("pointerup", up);
-      h.removeEventListener("pointercancel", up);
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       localStorage.setItem(opts.key, String(Math.round(opts.get())));
     };
-    h.addEventListener("pointermove", move);
-    h.addEventListener("pointerup", up);
-    h.addEventListener("pointercancel", up);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   });
   // 阻止拖完的 click 冒泡誤觸 (如甘特名稱列開編輯視窗)
   h.addEventListener("click", (e) => e.stopPropagation());
@@ -663,11 +666,14 @@ ${rocDate(m.date)}</title></path>`;
   // 左側名稱欄
   const names = el("div", { class: "g-names" },
     el("div", { class: "g-head", style: `height:${HEAD}px` }, `${dated.length} 件專案`));
-  names.style.flexBasis = storedW("pm_gnw",
-    window.innerWidth < 640 ? 118 : 190) + "px";
+  const setNamesW = (w) => {
+    names.style.flex = `0 0 ${w}px`;
+    names.style.width = names.style.minWidth = names.style.maxWidth = w + "px";
+  };
+  setNamesW(storedW("pm_gnw", window.innerWidth < 640 ? 118 : 190));
   names.append(colResizer({
-    get: () => parseFloat(names.style.flexBasis),
-    set: (w) => { names.style.flexBasis = w + "px"; },
+    get: () => parseFloat(names.style.width),
+    set: setNamesW,
     key: "pm_gnw", min: 80, max: 420 }));
   for (const p of dated) {
     const dot = el("i", { class: "dot" });
