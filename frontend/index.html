@@ -68,18 +68,19 @@ main{padding:10px}
 .tbl-wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;min-width:960px;font-size:13.5px}
 th{position:sticky;top:0;background:var(--panel2);color:var(--ink2);font-weight:500;
-  text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
-td{padding:8px 10px;border-bottom:1px solid var(--line2);vertical-align:top;white-space:nowrap}
+  text-align:center;padding:8px 10px;border:1px solid var(--line);white-space:nowrap}
+td{padding:8px 10px;border:1px solid var(--line2);vertical-align:middle;
+  white-space:nowrap;text-align:center}
 tr.row:hover td{background:var(--hover);cursor:pointer}
-td.name{white-space:normal;font-weight:500;overflow-wrap:anywhere}
-td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.name{white-space:normal;font-weight:500;overflow-wrap:anywhere;text-align:left}
+td.num{font-variant-numeric:tabular-nums}
 .badge{display:inline-block;font-size:12px;border-radius:999px;padding:1px 9px}
 .badge.ongoing{background:var(--teal-bg);color:var(--teal)}
 .badge.not_awarded{background:var(--amber-bg);color:var(--amber)}
 .badge.closed{background:var(--gray-bg);color:var(--gray)}
 .budget-chip{display:flex;width:max-content;align-items:stretch;font-size:12px;
   border:1.5px solid var(--yc,var(--ink2));border-radius:9px;overflow:hidden;
-  margin:2px 0;font-variant-numeric:tabular-nums;line-height:1.55}
+  margin:2px auto;font-variant-numeric:tabular-nums;line-height:1.55}
 .budget-chip .by{background:var(--yc,var(--ink2));color:var(--panel);
   font-weight:700;padding:0 7px;letter-spacing:.02em}
 .budget-chip .ba{background:var(--panel);color:var(--ink);
@@ -88,7 +89,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .yc3{--yc:var(--yc3)} .yc4{--yc:var(--yc4)} .yc5{--yc:var(--yc5)}
 .budget-chip.cur{box-shadow:0 0 0 2px color-mix(in srgb, var(--yc) 35%, transparent)}
 tfoot td{position:sticky;bottom:0;background:var(--panel2);
-  border-top:2px solid var(--line);border-bottom:0;font-weight:600}
+  border:1px solid var(--line);border-top-width:2px;font-weight:600}
 tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
 .col-resizer{position:absolute;top:0;right:-4px;width:8px;height:100%;
   cursor:col-resize;z-index:5;touch-action:none}
@@ -96,7 +97,7 @@ tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
   width:2px;background:var(--teal);opacity:0;transition:opacity .15s}
 .col-resizer:hover::after,.col-resizer.dragging::after{opacity:.8}
 .g-names{position:relative}
-td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
+td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px;text-align:left}
 .wty{display:inline-block;font-size:11px;color:var(--teal);
   border:1px solid var(--teal);border-radius:999px;padding:0 7px;
   margin-left:6px;vertical-align:1px;white-space:nowrap;font-weight:500}
@@ -245,6 +246,12 @@ const el = (tag, attrs = {}, ...kids) => {
   return n;
 };
 const fmtAmt = (n) => (n == null || n === "" ? "—" : Number(n).toLocaleString("zh-TW"));
+const fmtDur = (days) => {
+  if (days == null) return "—";
+  const m = days / 30.44;
+  if (m < 0.5) return "<1個月";
+  return (Math.round(m * 10) / 10).toString().replace(/\.0$/, "") + "個月";
+};
 const rocDate = (iso) => {
   if (!iso) return "—";
   const [y, m, d] = iso.split("-");
@@ -538,7 +545,7 @@ function renderTable() {
       el("td", {}, p.so_number || "—"),
       el("td", { class: "num" }, rocDate(p.start_date)),
       el("td", { class: "num" }, rocDate(p.end_date)),
-      el("td", { class: "num" }, p.duration_days != null ? p.duration_days + " 天" : "—"),
+      el("td", { class: "num" }, fmtDur(p.duration_days)),
       el("td", {}, p.participants || "—"),
       el("td", { class: "num" }, fmtAmt(p.awarded_amount)),
       budgets,
@@ -632,7 +639,7 @@ function renderGantt() {
     svg += `<g class="bar" data-id="${p.id}" style="cursor:pointer">`;
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="${fill}" opacity="${op}"${dash}/>`;
     if (w > 74 && !short)
-      svg += `<text x="${x+8}" y="${y+15}" font-size="11" fill="#fff">${p.duration_days} 天</text>`;
+      svg += `<text x="${x+8}" y="${y+15}" font-size="11" fill="#fff">${fmtDur(p.duration_days)}</text>`;
     if (p.kickoff_date) {
       const kx = X(utc(p.kickoff_date)) + px/2;
       svg += `<path d="M ${kx} ${y-6} l 5 6 l -5 6 l -5 -6 z" fill="var(--navy)"><title>啟動會議 ${rocDate(p.kickoff_date)}</title></path>`;
@@ -669,7 +676,7 @@ ${rocDate(m.date)}</title></path>`;
         svg += `<text x="${lx}" y="${laneY}" font-size="${msFont}" font-weight="500"`
              + ` text-anchor="middle" fill="${fill}">${esc(label)}</text>`;
     }
-    svg += `<title>${esc(p.name)}\n${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}(${p.duration_days} 天)\n${STATUS_TXT[p.status]}${p.awarded_amount!=null ? "\n決標 " + fmtAmt(p.awarded_amount) : ""}</title></g>`;
+    svg += `<title>${esc(p.name)}\n${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}(${fmtDur(p.duration_days)})\n${STATUS_TXT[p.status]}${p.awarded_amount!=null ? "\n決標 " + fmtAmt(p.awarded_amount) : ""}</title></g>`;
   });
 
   // 今天線
