@@ -39,7 +39,7 @@ def startup():
 PROJECT_FIELDS = [
     "year", "status", "contract_no", "part_no", "so_number", "name",
     "start_date", "end_date", "participants", "awarded_amount",
-    "kickoff_date", "notes", "sort_order",
+    "kickoff_date", "warranty_years", "notes", "sort_order",
 ]
 
 
@@ -66,10 +66,21 @@ EDIT_PID = auth_core.require_edit(get_db, "pid")  # 逐案編輯權
 ADMIN = auth_core.require_admin(get_db)        # 僅管理者
 
 
+# 欄位遷移清單:CREATE IF NOT EXISTS 不會對「既有表」加欄位,
+# 新增欄位一律登記於此,init_db 會自動 ALTER TABLE 補上 (冪等)
+MIGRATIONS = [
+    ("projects", "warranty_years", "INTEGER"),
+]
+
+
 def init_db():
     db = sqlite3.connect(DB_PATH)
     with open(SCHEMA_PATH, encoding="utf-8") as f:
         db.executescript(f.read())
+    for table, col, typ in MIGRATIONS:
+        cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
     db.commit()
     db.close()
 
@@ -128,6 +139,9 @@ def validate_project(data, partial=False):
         return None, "履約迄日不可早於起日"
     if "status" in out and out["status"] not in ("ongoing", "not_awarded", "closed"):
         return None, "status 僅接受 ongoing / not_awarded / closed"
+    wy = out.get("warranty_years")
+    if wy is not None and (not isinstance(wy, int) or wy < 0 or wy > 50):
+        return None, "保固年數須為 0~50 的整數"
     return out, None
 
 
@@ -391,12 +405,13 @@ def init_year(new_year):
         cur = db.execute(
             "INSERT INTO projects (year, status, contract_no, part_no,"
             " so_number, name, start_date, end_date, participants,"
-            " awarded_amount, kickoff_date, notes, sort_order, copied_from)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " awarded_amount, kickoff_date, warranty_years, notes,"
+            " sort_order, copied_from)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (new_year, r["status"], r["contract_no"], r["part_no"],
              r["so_number"], r["name"], r["start_date"], r["end_date"],
              r["participants"], r["awarded_amount"], r["kickoff_date"],
-             r["notes"], r["sort_order"], r["id"]),
+             r["warranty_years"], r["notes"], r["sort_order"], r["id"]),
         )
         new_id = cur.lastrowid
         db.execute(

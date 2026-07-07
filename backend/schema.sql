@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS projects (
     participants  TEXT NOT NULL DEFAULT '',       -- 參與人員 (自由文字,逗號分隔)
     awarded_amount INTEGER,                       -- 決標金額 (NULL=未決標)
     kickoff_date  TEXT,                           -- 啟動會議日期
+    warranty_years INTEGER,                       -- 保固年數 (NULL=無/未填)
     notes         TEXT NOT NULL DEFAULT '',       -- 備註
     sort_order    INTEGER NOT NULL DEFAULT 0,     -- 表內排序
     copied_from   INTEGER REFERENCES projects(id),-- 年度複製來源 (NULL=非複製)
