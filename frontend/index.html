@@ -72,7 +72,7 @@ th{position:sticky;top:0;background:var(--panel2);color:var(--ink2);font-weight:
   text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
 td{padding:8px 10px;border-bottom:1px solid var(--line2);vertical-align:top;white-space:nowrap}
 tr.row:hover td{background:var(--hover);cursor:pointer}
-td.name{white-space:normal;min-width:180px;font-weight:500}
+td.name{white-space:normal;font-weight:500;overflow-wrap:anywhere}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
 .badge{display:inline-block;font-size:12px;border-radius:999px;padding:1px 9px}
 .badge.ongoing{background:var(--teal-bg);color:var(--teal)}
@@ -91,6 +91,12 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 tfoot td{position:sticky;bottom:0;background:var(--panel2);
   border-top:2px solid var(--line);border-bottom:0;font-weight:600}
 tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
+.col-resizer{position:absolute;top:0;right:-4px;width:8px;height:100%;
+  cursor:col-resize;z-index:5;touch-action:none}
+.col-resizer::after{content:"";position:absolute;top:0;bottom:0;left:3px;
+  width:2px;background:var(--teal);opacity:0;transition:opacity .15s}
+.col-resizer:hover::after,.col-resizer.dragging::after{opacity:.8}
+.g-names{position:relative}
 td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 
 /* ---------- gantt ---------- */
@@ -446,6 +452,35 @@ $("#btnNewYear").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
+/* ---------- 欄寬拖拉 (滑鼠/觸控,寬度記憶於瀏覽器) ---------- */
+function colResizer(opts) {
+  const h = el("div", { class: "col-resizer", title: "拖拉調整欄寬" });
+  h.addEventListener("pointerdown", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX, startW = opts.get();
+    h.classList.add("dragging");
+    try { h.setPointerCapture(e.pointerId); } catch (_e) { /* 舊環境無此 API */ }
+    const move = (ev) => {
+      const w = Math.min(opts.max, Math.max(opts.min, startW + ev.clientX - startX));
+      opts.set(w);
+    };
+    const up = () => {
+      h.classList.remove("dragging");
+      h.removeEventListener("pointermove", move);
+      h.removeEventListener("pointerup", up);
+      h.removeEventListener("pointercancel", up);
+      localStorage.setItem(opts.key, String(Math.round(opts.get())));
+    };
+    h.addEventListener("pointermove", move);
+    h.addEventListener("pointerup", up);
+    h.addEventListener("pointercancel", up);
+  });
+  // 阻止拖完的 click 冒泡誤觸 (如甘特名稱列開編輯視窗)
+  h.addEventListener("click", (e) => e.stopPropagation());
+  return h;
+}
+const storedW = (key, def) => Number(localStorage.getItem(key)) || def;
+
 /* ============================== 總表 ============================== */
 function render() {
   if (S.view === "users") return renderUsers();
@@ -460,7 +495,14 @@ function render() {
 function renderTable() {
   const head = ["狀態","案名","契約號","SO number","履約起","履約迄","工期",
                 "參與人員","決標金額","各年度預估認列","備註"];
-  const thead = el("thead", {}, el("tr", {}, ...head.map(h => el("th", {}, h))));
+  const ths = head.map(h => el("th", {}, h));
+  const nameTh = ths[1];
+  nameTh.style.width = storedW("pm_namew", 220) + "px";
+  nameTh.append(colResizer({
+    get: () => parseFloat(nameTh.style.width),
+    set: (w) => { nameTh.style.width = w + "px"; },
+    key: "pm_namew", min: 110, max: 620 }));
+  const thead = el("thead", {}, el("tr", {}, ...ths));
   const tbody = el("tbody");
   for (const p of S.projects) {
     const budgets = el("td", {}, ...p.budgets.map(b =>
@@ -621,6 +663,12 @@ ${rocDate(m.date)}</title></path>`;
   // 左側名稱欄
   const names = el("div", { class: "g-names" },
     el("div", { class: "g-head", style: `height:${HEAD}px` }, `${dated.length} 件專案`));
+  names.style.flexBasis = storedW("pm_gnw",
+    window.innerWidth < 640 ? 118 : 190) + "px";
+  names.append(colResizer({
+    get: () => parseFloat(names.style.flexBasis),
+    set: (w) => { names.style.flexBasis = w + "px"; },
+    key: "pm_gnw", min: 80, max: 420 }));
   for (const p of dated) {
     const dot = el("i", { class: "dot" });
     dot.style.background = projColor(p);
