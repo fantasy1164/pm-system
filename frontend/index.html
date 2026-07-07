@@ -77,16 +77,16 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 .badge.ongoing{background:var(--teal-bg);color:var(--teal)}
 .badge.not_awarded{background:var(--amber-bg);color:var(--amber)}
 .badge.closed{background:var(--gray-bg);color:var(--gray)}
-.budget-chip{display:inline-block;font-size:12px;color:var(--ink2);
-  background:var(--chip);border-radius:4px;padding:0 6px;margin:1px 2px 1px 0;
-  font-variant-numeric:tabular-nums;border:1px solid transparent;font-weight:500}
-.yc0{color:var(--yc0);background:color-mix(in srgb, var(--yc0) 13%, transparent)}
-.yc1{color:var(--yc1);background:color-mix(in srgb, var(--yc1) 13%, transparent)}
-.yc2{color:var(--yc2);background:color-mix(in srgb, var(--yc2) 13%, transparent)}
-.yc3{color:var(--yc3);background:color-mix(in srgb, var(--yc3) 13%, transparent)}
-.yc4{color:var(--yc4);background:color-mix(in srgb, var(--yc4) 13%, transparent)}
-.yc5{color:var(--yc5);background:color-mix(in srgb, var(--yc5) 13%, transparent)}
-.budget-chip.cur{border-color:currentColor}
+.budget-chip{display:flex;width:max-content;align-items:stretch;font-size:12px;
+  border:1.5px solid var(--yc,var(--ink2));border-radius:9px;overflow:hidden;
+  margin:2px 0;font-variant-numeric:tabular-nums;line-height:1.55}
+.budget-chip .by{background:var(--yc,var(--ink2));color:var(--panel);
+  font-weight:700;padding:0 7px;letter-spacing:.02em}
+.budget-chip .ba{background:var(--panel);color:var(--ink);
+  font-weight:600;padding:0 8px}
+.yc0{--yc:var(--yc0)} .yc1{--yc:var(--yc1)} .yc2{--yc:var(--yc2)}
+.yc3{--yc:var(--yc3)} .yc4{--yc:var(--yc4)} .yc5{--yc:var(--yc5)}
+.budget-chip.cur{box-shadow:0 0 0 2px color-mix(in srgb, var(--yc) 35%, transparent)}
 tfoot td{position:sticky;bottom:0;background:var(--panel2);
   border-top:2px solid var(--line);border-bottom:0;font-weight:600}
 tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
@@ -514,7 +514,8 @@ function renderTable() {
       el("span", { class: `budget-chip yc${b.year % 6}` +
                           (b.year === S.year ? " cur" : ""),
         title: b.year === S.year ? "目前檢視年度" : "" },
-        `${b.year}:${fmtAmt(b.amount)}`)));
+        el("span", { class: "by" }, String(b.year)),
+        el("span", { class: "ba" }, fmtAmt(b.amount)))));
     tbody.append(el("tr", { class: "row", onclick: () => openModal(p) },
       el("td", {}, el("span", { class: "badge " + p.status }, STATUS_TXT[p.status] || p.status)),
       el("td", { class: "name" }, p.name),
@@ -538,7 +539,8 @@ function renderTable() {
       byYear[b.year] = (byYear[b.year] || 0) + (b.amount || 0);
   const yearChips = Object.keys(byYear).map(Number).sort().map(y =>
     el("span", { class: `budget-chip yc${y % 6}` + (y === S.year ? " cur" : "") },
-      `${y}:${fmtAmt(byYear[y])}`));
+      el("span", { class: "by" }, String(y)),
+      el("span", { class: "ba" }, fmtAmt(byYear[y]))));
   const tfoot = el("tfoot", {}, el("tr", {},
     el("td", { class: "lbl", colspan: "8" }, `小計(${S.projects.length} 案)`),
     el("td", { class: "num" }, fmtAmt(awardedSum)),
