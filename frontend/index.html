@@ -55,8 +55,7 @@ header h1{font-size:17px;font-weight:600;margin:0;color:var(--navy);letter-spaci
 .btn.primary{background:var(--teal);border-color:var(--teal);color:#fff}
 .btn.danger{background:#fff;border-color:var(--red);color:var(--red)}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
-  margin-right:5px;flex:0 0 auto;vertical-align:baseline}
-.g-name .nm{display:flex;align-items:center}
+  flex:0 0 auto;vertical-align:baseline}
 .user-chip{font-size:12.5px;color:var(--ink2);border:1px dashed var(--line);
   border-radius:999px;padding:3px 10px;background:transparent}
 
@@ -108,11 +107,13 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px}
 .g-names{flex:0 0 190px;border-right:1px solid var(--line);background:var(--panel2)}
 .g-names .g-head{height:34px;border-bottom:1px solid var(--line);display:flex;
   align-items:center;padding:0 10px;font-size:12px;color:var(--ink2)}
-.g-name{height:44px;border-bottom:1px solid var(--line2);padding:5px 10px;cursor:pointer;
-  display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+.g-name{height:44px;border-bottom:1px solid var(--line2);padding:4px 10px;cursor:pointer;
+  display:flex;align-items:center;gap:6px;overflow:hidden}
 .g-name:hover{background:var(--hover)}
-.g-name .nm{font-size:13px;font-weight:500;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
+.g-name .txt{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+.g-name .nm{font-size:13px;font-weight:500;line-height:1.2;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  overflow:hidden;overflow-wrap:anywhere;word-break:break-word}
 .g-name .sub{font-size:11.5px;color:var(--ink2);white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .g-scroll{flex:1;overflow-x:auto;overflow-y:hidden}
@@ -473,6 +474,7 @@ function colResizer(opts) {
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
       localStorage.setItem(opts.key, String(Math.round(opts.get())));
+      if (opts.onDone) opts.onDone();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -674,17 +676,18 @@ ${rocDate(m.date)}</title></path>`;
   names.append(colResizer({
     get: () => parseFloat(names.style.width),
     set: setNamesW,
-    key: "pm_gnw", min: 80, max: 420 }));
+    key: "pm_gnw", min: 80, max: 420,
+    onDone: () => renderGantt() }));
   for (const p of dated) {
     const dot = el("i", { class: "dot" });
     dot.style.background = projColor(p);
-    const nameEl = el("div", { class: "g-name", style: `height:${ROW}px`,
-      onclick: () => openModal(p) },
-      el("div", { class: "nm", title: p.name }, dot, p.name));
+    const txt = el("div", { class: "txt" },
+      el("div", { class: "nm", title: p.name }, p.name));
     if (!short)
-      nameEl.append(el("div", { class: "sub" },
+      txt.append(el("div", { class: "sub" },
         `${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}`));
-    names.append(nameEl);
+    names.append(el("div", { class: "g-name", style: `height:${ROW}px`,
+      onclick: () => openModal(p) }, dot, txt));
   }
 
   const scroll = el("div", { class: "g-scroll" });
@@ -722,6 +725,14 @@ ${rocDate(m.date)}</title></path>`;
   // 自動捲到今天附近
   if (now >= lo && now <= hi)
     scroll.scrollLeft = Math.max(0, X(now) - scroll.clientWidth * 0.35);
+
+  // 案名斷成兩行的列:隱藏日期副行讓出高度 (單行高約 16px,>22 即為斷行)
+  requestAnimationFrame(() => {
+    for (const r of names.querySelectorAll(".g-name")) {
+      const nm = r.querySelector(".nm"), sub = r.querySelector(".sub");
+      if (nm && sub && nm.scrollHeight > 22) sub.style.display = "none";
+    }
+  });
 }
 function legendItem(color, txt, kind) {
   const s = el("span", {}, el("i", {}), txt);
