@@ -441,15 +441,25 @@ function setView(v) {
 $("#btnAdd").addEventListener("click", () => openModal(null));
 $("#btnNewYear").addEventListener("click", async () => {
   const def = Math.max(...S.years) + 1;
-  const v = prompt("建立新年度(民國),會自動複製履約期跨入該年度的進行中專案:", def);
+  const v = prompt("建立年度(民國)。未來年度會自動複製跨年度進行中專案;"
+                 + "過去年度(補建歷史資料)則建立空年度:", def);
   if (v === null) return;
   const y = parseInt(v, 10);
   if (!y || y < 100 || y > 200) return toast("年度格式不正確", true);
   try {
     const r = await api(`/years/${y}/init`, { method: "POST" });
-    toast(`已建立 ${y} 年度,複製 ${r.copied.length} 筆跨年度專案`);
     S.year = y;
-    await loadYears(); await loadProjects();
+    await loadYears();
+    if (!S.years.includes(y)) {          // 空年度 (如補建過去年度):手動掛上頁籤
+      S.years.push(y);
+      S.years.sort((a, b) => b - a);
+      S.year = y;
+      renderYearTabs();
+    }
+    await loadProjects();
+    toast(r.copied.length
+      ? `已建立 ${y} 年度,複製 ${r.copied.length} 筆跨年度專案`
+      : `已建立 ${y} 年度 (空),點「＋ 新增專案」開始補建`);
   } catch (e) { toast(e.message, true); }
 });
 
@@ -868,6 +878,11 @@ function openModal(p) {
   const frm = el("div", { class: "frm" });
   frm.append(
     el("label", { class: "full" }, "案名 *", f.name = el("input", { value: d.name || "" })),
+    el("label", {}, "年度(民國)", f.year = (() => {
+      const i = el("input", { type: "number", value: d.year });
+      if (!isNew) i.disabled = true;   // 年度歸屬由年度複製機制管理,編輯時不改
+      return i;
+    })()),
     el("label", {}, "狀態", f.status = (() => {
       const s = el("select", {},
         el("option", { value: "ongoing" }, "進行中"),
@@ -920,8 +935,12 @@ function openModal(p) {
   if (editable) f.name.focus();
 
   async function save() {
+    const inputYear = parseInt(f.year.value, 10);
+    if (!inputYear || inputYear < 90 || inputYear > 200)
+      return toast("年度格式不正確 (民國,例 114)", true);
     const payload = {
-      year: d.year, name: f.name.value.trim(), status: f.status.value,
+      year: isNew ? inputYear : d.year,
+      name: f.name.value.trim(), status: f.status.value,
       contract_no: f.contract_no.value.trim(), part_no: f.part_no.value.trim(),
       so_number: f.so_number.value.trim(),
       start_date: f.start_date.value || null, end_date: f.end_date.value || null,
@@ -942,7 +961,9 @@ function openModal(p) {
       if (isNew) await api("/projects", { method: "POST", body: JSON.stringify(payload) });
       else await api(`/projects/${d.id}`, { method: "PUT", body: JSON.stringify(payload) });
       toast(isNew ? "已建立" : "已儲存");
-      close(); await refresh();
+      close();
+      if (isNew) S.year = payload.year;   // 跳到剛建立的年度 (含補建的過去年度)
+      await refresh();
     } catch (e) { toast(e.message, true); }
   }
 }
