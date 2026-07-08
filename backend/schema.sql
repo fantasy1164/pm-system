@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS projects (
     awarded_amount INTEGER,                       -- 決標金額 (NULL=未決標)
     kickoff_date  TEXT,                           -- 啟動會議日期
     warranty_years INTEGER,                       -- 保固年數 (NULL=無/未填)
+    team_id       INTEGER REFERENCES teams(id),   -- 團隊歸屬 (NULL=未指定)
+    contract_scan INTEGER NOT NULL DEFAULT 0,     -- 已收到合約掃檔
+    nda_date      TEXT,                           -- 保密文件簽署日期
+    nda_scan      INTEGER NOT NULL DEFAULT 0,     -- 保密文件掃描檔
     notes         TEXT NOT NULL DEFAULT '',       -- 備註
     sort_order    INTEGER NOT NULL DEFAULT 0,     -- 表內排序
     copied_from   INTEGER REFERENCES projects(id),-- 年度複製來源 (NULL=非複製)
@@ -43,6 +47,29 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_projects_year ON projects (year, deleted, sort_order);
+
+-- 團隊
+CREATE TABLE IF NOT EXISTS teams (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name  TEXT NOT NULL UNIQUE
+);
+
+-- 使用者的團隊歸屬與其在該團隊中的角色 (使用者可屬多團隊)
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id  INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role     TEXT NOT NULL DEFAULT 'dev'
+             CHECK (role IN ('pm', 'dept_head', 'sales', 'dev')),
+    PRIMARY KEY (team_id, user_id)
+);
+
+-- 角色 × 欄位 權限矩陣 (未設定 = writable)
+CREATE TABLE IF NOT EXISTS field_perms (
+    role   TEXT NOT NULL,
+    field  TEXT NOT NULL,
+    level  TEXT NOT NULL CHECK (level IN ('invisible', 'readonly', 'writable')),
+    PRIMARY KEY (role, field)
+);
 
 -- 專案里程碑
 CREATE TABLE IF NOT EXISTS milestones (

@@ -39,8 +39,72 @@ def startup():
 PROJECT_FIELDS = [
     "year", "status", "contract_no", "part_no", "so_number", "name",
     "start_date", "end_date", "participants", "awarded_amount",
-    "kickoff_date", "warranty_years", "notes", "sort_order",
+    "kickoff_date", "warranty_years", "team_id", "contract_scan",
+    "nda_date", "nda_scan", "notes", "sort_order",
 ]
+
+# 欄位權限矩陣定義:矩陣欄位鍵 -> 實際資料欄位
+PERM_ROLES = ("pm", "dept_head", "sales", "dev")   # admin 永遠全開
+FIELD_MAP = {
+    "nda":            ["nda_date", "nda_scan"],
+    "contract":       ["contract_scan"],
+    "name":           ["name"],
+    "contract_no":    ["contract_no"],
+    "part_no":        ["part_no"],
+    "so_number":      ["so_number"],
+    "schedule":       ["start_date", "end_date", "duration_days",
+                       "kickoff_date", "milestones"],
+    "participants":   ["participants"],
+    "awarded_amount": ["awarded_amount"],
+    "budgets":        ["budgets"],
+    "warranty":       ["warranty_years"],
+    "team":           ["team_id"],
+    "notes":          ["notes"],
+}
+FIELD_LABELS = [("nda", "保密文件"), ("contract", "合約"), ("name", "案名"),
+    ("contract_no", "契約號"), ("part_no", "料號"), ("so_number", "SO number"),
+    ("schedule", "期程/里程碑"), ("participants", "參與人員"),
+    ("awarded_amount", "決標金額"), ("budgets", "預估認列"),
+    ("warranty", "保固"), ("team", "團隊"), ("notes", "備註")]
+
+
+def load_perm_matrix(db):
+    """{role: {field: level}},未設定 = writable"""
+    m = {r: {} for r in PERM_ROLES}
+    for row in db.execute("SELECT role, field, level FROM field_perms"):
+        if row["role"] in m and row["field"] in FIELD_MAP:
+            m[row["role"]][row["field"]] = row["level"]
+    return m
+
+
+def requester_role():
+    u = getattr(g, "user", None)
+    return u["role"] if u else "admin"   # 未啟用登入 = 開發模式,不過濾
+
+
+def strip_invisible(d, db):
+    role = requester_role()
+    if role == "admin":
+        return d
+    levels = load_perm_matrix(db).get(role, {})
+    for fkey, level in levels.items():
+        if level == "invisible":
+            for col in FIELD_MAP[fkey]:
+                d.pop(col, None)
+    return d
+
+
+def writable_fields(db):
+    """回傳目前請求者不可寫的實際欄位集合"""
+    role = requester_role()
+    if role == "admin":
+        return set()
+    blocked = set()
+    levels = load_perm_matrix(db).get(role, {})
+    for fkey, level in levels.items():
+        if level in ("invisible", "readonly"):
+            blocked.update(FIELD_MAP[fkey])
+    return blocked
 
 
 # ---------------------------------------------------------------- DB helpers
@@ -70,6 +134,10 @@ ADMIN = auth_core.require_admin(get_db)        # 僅管理者
 # 新增欄位一律登記於此,init_db 會自動 ALTER TABLE 補上 (冪等)
 MIGRATIONS = [
     ("projects", "warranty_years", "INTEGER"),
+    ("projects", "team_id", "INTEGER"),
+    ("projects", "contract_scan", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "nda_date", "TEXT"),
+    ("projects", "nda_scan", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -142,6 +210,11 @@ def validate_project(data, partial=False):
     wy = out.get("warranty_years")
     if wy is not None and (not isinstance(wy, int) or wy < 0 or wy > 50):
         return None, "保固年數須為 0~50 的整數"
+    if out.get("nda_date") and parse_iso(out["nda_date"]) is None:
+        return None, "保密文件簽署日期格式須為 YYYY-MM-DD"
+    for b in ("contract_scan", "nda_scan"):
+        if b in out:
+            out[b] = 1 if out[b] else 0
     return out, None
 
 
@@ -280,27 +353,33 @@ def list_projects():
             f" WHERE project_id IN ({q}) ORDER BY date", ids
         ):
             ms_map.setdefault(m["project_id"], []).append(m)
-    return jsonify([project_to_dict(r, budget_map.get(r["id"], []),
-                                    ms_map.get(r["id"], [])) for r in rows])
+    return jsonify([strip_invisible(project_to_dict(
+        r, budget_map.get(r["id"], []), ms_map.get(r["id"], [])), db)
+        for r in rows])
 
 
 @app.get("/api/projects/<int:pid>")
 @VIEW
 def get_project(pid):
-    p = fetch_project(get_db(), pid)
+    db = get_db()
+    p = fetch_project(db, pid)
     if p is None:
         return jsonify({"error": "找不到專案"}), 404
-    return jsonify(p)
+    return jsonify(strip_invisible(p, db))
 
 
 @app.post("/api/projects")
 @EDIT_GLOBAL
 def create_project():
     data = request.get_json(silent=True) or {}
+    db = get_db()
+    blocked = writable_fields(db)
+    for k in list(data.keys()):
+        if k in blocked:
+            data.pop(k)
     fields, err = validate_project(data)
     if err:
         return jsonify({"error": err}), 400
-    db = get_db()
     cols = ", ".join(fields)
     marks = ", ".join("?" * len(fields))
     cur = db.execute(
@@ -328,6 +407,10 @@ def update_project(pid):
     if old is None:
         return jsonify({"error": "找不到專案"}), 404
     data = request.get_json(silent=True) or {}
+    blocked = writable_fields(db)
+    for k in list(data.keys()):
+        if k in blocked:
+            data.pop(k)
     fields, err = validate_project(data, partial=True)
     if err:
         return jsonify({"error": err}), 400
@@ -405,13 +488,14 @@ def init_year(new_year):
         cur = db.execute(
             "INSERT INTO projects (year, status, contract_no, part_no,"
             " so_number, name, start_date, end_date, participants,"
-            " awarded_amount, kickoff_date, warranty_years, notes,"
-            " sort_order, copied_from)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " awarded_amount, kickoff_date, warranty_years, team_id,"
+            " contract_scan, nda_date, nda_scan, notes, sort_order, copied_from)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (new_year, r["status"], r["contract_no"], r["part_no"],
              r["so_number"], r["name"], r["start_date"], r["end_date"],
              r["participants"], r["awarded_amount"], r["kickoff_date"],
-             r["warranty_years"], r["notes"], r["sort_order"], r["id"]),
+             r["warranty_years"], r["team_id"], r["contract_scan"],
+             r["nda_date"], r["nda_scan"], r["notes"], r["sort_order"], r["id"]),
         )
         new_id = cur.lastrowid
         db.execute(
@@ -445,6 +529,7 @@ def _me_payload(db, user):
             (user["id"],))]
     return {"user": {k: user[k] for k in
                      ("id", "email", "name", "role", "status", "can_edit")},
+            "teams": user_teams(db, user["id"]),
             "editable": editable}
 
 
@@ -517,6 +602,85 @@ def auth_me():
     return jsonify(_me_payload(get_db(), g.user))
 
 
+# ------------------------------------------------------- teams (B.a)
+@app.get("/api/teams")
+@VIEW
+def list_teams():
+    rows = get_db().execute("SELECT id, name FROM teams ORDER BY id").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/teams")
+@ADMIN
+def create_team():
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "團隊名稱為必填"}), 400
+    db = get_db()
+    if db.execute("SELECT 1 FROM teams WHERE name = ?", (name,)).fetchone():
+        return jsonify({"error": "團隊名稱已存在"}), 400
+    cur = db.execute("INSERT INTO teams (name) VALUES (?)", (name,))
+    write_audit(db, "create", "teams", cur.lastrowid, {"name": name})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"id": cur.lastrowid, "name": name}), 201
+
+
+@app.delete("/api/teams/<int:tid>")
+@ADMIN
+def delete_team(tid):
+    db = get_db()
+    row = db.execute("SELECT * FROM teams WHERE id = ?", (tid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "找不到團隊"}), 404
+    np = db.execute("SELECT COUNT(*) c FROM projects WHERE team_id = ?"
+                    " AND deleted = 0", (tid,)).fetchone()["c"]
+    nu = db.execute("SELECT COUNT(*) c FROM team_members WHERE team_id = ?",
+                    (tid,)).fetchone()["c"]
+    if np or nu:
+        return jsonify({"error": f"無法刪除:仍有 {np} 個專案、{nu} 位成員"
+                                 f"歸屬於「{row['name']}」,請先移除歸屬"}), 400
+    db.execute("DELETE FROM teams WHERE id = ?", (tid,))
+    write_audit(db, "delete", "teams", tid, {"name": row["name"]})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"deleted": tid})
+
+
+# ---------------------------------------------- 欄位權限矩陣 (B.a 下半)
+@app.get("/api/perms")
+@VIEW
+def get_perms():
+    return jsonify({"roles": list(PERM_ROLES),
+                    "fields": [{"key": k, "label": v} for k, v in FIELD_LABELS],
+                    "matrix": load_perm_matrix(get_db())})
+
+
+@app.put("/api/perms")
+@ADMIN
+def put_perms():
+    data = (request.get_json(silent=True) or {}).get("matrix") or {}
+    db = get_db()
+    db.execute("DELETE FROM field_perms")
+    valid_fields = set(FIELD_MAP)
+    for role, fields in data.items():
+        if role not in PERM_ROLES:
+            continue
+        for f, level in fields.items():
+            if f in valid_fields and level in ("invisible", "readonly"):
+                db.execute("INSERT INTO field_perms (role, field, level)"
+                           " VALUES (?,?,?)", (role, f, level))
+    write_audit(db, "update", "field_perms", 0, {"matrix": data})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"matrix": load_perm_matrix(db)})
+
+
+def user_teams(db, uid):
+    return [{"team_id": r["team_id"], "role": r["role"]} for r in db.execute(
+        "SELECT team_id, role FROM team_members WHERE user_id = ?", (uid,))]
+
+
 # ------------------------------------------------------- users (admin)
 USER_EDITABLE = ("role", "status", "can_edit")
 
@@ -524,10 +688,11 @@ USER_EDITABLE = ("role", "status", "can_edit")
 @app.get("/api/users")
 @ADMIN
 def list_users():
-    rows = get_db().execute(
+    db = get_db()
+    rows = db.execute(
         "SELECT id, email, name, role, status, can_edit, created_at"
         " FROM users ORDER BY status = 'pending' DESC, id").fetchall()
-    return jsonify([dict(r) for r in rows])
+    return jsonify([{**dict(r), "teams": user_teams(db, r["id"])} for r in rows])
 
 
 @app.put("/api/users/<int:uid>")
@@ -549,17 +714,32 @@ def update_user(uid):
             "pending", "active", "disabled"):
         return jsonify({"error": "無效的狀態"}), 400
     changes = {k: [old[k], v] for k, v in fields.items() if old[k] != v}
-    if changes:
+    if fields:
         sets = ", ".join(f"{k} = ?" for k in fields)
         db.execute(f"UPDATE users SET {sets},"
                    " updated_at = datetime('now','localtime') WHERE id = ?",
                    list(fields.values()) + [uid])
+    # 團隊歸屬 (B.a):pending/disabled 使用者不歸屬任何團隊
+    final_status = fields.get("status", old["status"])
+    if "teams" in data or final_status != "active":
+        db.execute("DELETE FROM team_members WHERE user_id = ?", (uid,))
+        if final_status == "active":
+            for m in (data.get("teams") or []):
+                r = m.get("role", "dev")
+                if r not in ("pm", "dept_head", "sales", "dev"):
+                    r = "dev"
+                db.execute("INSERT OR IGNORE INTO team_members"
+                           " (team_id, user_id, role) VALUES (?,?,?)",
+                           (int(m["team_id"]), uid, r))
+        changes["teams"] = ["(replaced)", data.get("teams")
+                            if final_status == "active" else []]
+    if changes:
         write_audit(db, "update", "users", uid, changes)
-        db.commit()
-        BACKUP.mark_dirty()
+    db.commit()
+    BACKUP.mark_dirty()
     row = db.execute("SELECT id, email, name, role, status, can_edit"
                      " FROM users WHERE id = ?", (uid,)).fetchone()
-    return jsonify(dict(row))
+    return jsonify({**dict(row), "teams": user_teams(db, uid)})
 
 
 @app.delete("/api/users/<int:uid>")

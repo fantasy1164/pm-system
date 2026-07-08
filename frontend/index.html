@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>專案期程預算總表</title>
+<title>專案管理系統</title>
 <script>
 document.documentElement.dataset.theme =
   localStorage.getItem("pm_theme") ||
@@ -91,6 +91,12 @@ td.num{font-variant-numeric:tabular-nums}
 tfoot td{position:sticky;bottom:0;background:var(--panel2);
   border:1px solid var(--line);border-top-width:2px;font-weight:600}
 tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
+tr.grp td.grp-td{background:var(--panel2);text-align:left;font-weight:600;
+  color:var(--ink2);padding:6px 10px;border:1px solid var(--line)}
+tr.grp td.grp-td.ongoing{color:var(--teal)}
+tr.grp td.grp-td.not_awarded{color:var(--amber)}
+tr.grp td.grp-td.closed{color:var(--gray)}
+.scan{font-size:14px} .scan.none{color:var(--ink2)}
 .col-resizer{position:absolute;top:0;right:-4px;width:8px;height:100%;
   cursor:col-resize;z-index:5;touch-action:none}
 .col-resizer::after{content:"";position:absolute;top:0;bottom:0;left:3px;
@@ -181,14 +187,15 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
 </head>
 <body>
 <header>
-  <h1>專案期程預算總表</h1>
+  <h1>專案管理系統</h1>
+  <button class="user-chip" id="teamChip" style="display:none" title="點擊切換團隊"></button>
   <nav class="year-tabs" id="yearTabs" aria-label="年度"></nav>
   <button class="btn" id="btnNewYear" title="建立新年度並複製跨年度專案">＋ 新年度</button>
   <span class="spacer"></span>
   <div class="view-toggle" role="tablist">
     <button id="vTable" class="active">總表</button>
     <button id="vGantt">甘特圖</button>
-    <button id="vUsers" style="display:none">使用者</button>
+    <button id="vUsers" style="display:none">權限設定</button>
   </div>
   <button class="btn primary" id="btnAdd">＋ 新增專案</button>
   <button class="btn" id="themeBtn" title="切換深/淺色主題">🌓</button>
@@ -212,7 +219,10 @@ const S = {
   years: [], year: null, projects: [], view: "table",
   pxPerDay: window.innerWidth < 640 ? 1.4 : 2.4,
   auth: { enabled: false, clientId: "" },
-  me: null,   // {user:{...}, editable:"all"|[project_id]}
+  me: null,   // {user:{...}, teams:[{team_id,role}], editable:"all"|[project_id]}
+  teams: [],  // 全部團隊 [{id,name}]
+  team: null, // 當前檢視團隊 id;null = 全團隊
+  perms: { roles: [], fields: [], matrix: {} },
 };
 const getTok = () => sessionStorage.getItem("pm_token");
 const setTok = (t) => t ? sessionStorage.setItem("pm_token", t)
@@ -293,6 +303,43 @@ async function api(path, opts = {}) {
 }
 
 /* ============================== 登入 / 權限 ============================== */
+function permLevel(fkey) {
+  if (!S.auth.enabled) return "writable";
+  const role = S.me && S.me.user.role;
+  if (role === "admin") return "writable";
+  return (S.perms.matrix[role] || {})[fkey] || "writable";
+}
+const canSee = (f) => permLevel(f) !== "invisible";
+const canWrite = (f) => permLevel(f) === "writable";
+
+function teamName(id) {
+  const x = S.teams.find(t => t.id === id);
+  return x ? x.name : "未指定";
+}
+function teamOptions() {   // C.a:可切換的團隊清單 (null=全團隊)
+  if (!S.auth.enabled || isAdmin())
+    return [null, ...S.teams.map(t => t.id)];
+  const mine = ((S.me && S.me.teams) || []).map(m => m.team_id);
+  if (mine.length <= 1) return mine.length ? [null, ...mine] : [null];
+  return [null, ...mine];
+}
+function viewProjects() {  // 依當前團隊過濾
+  return S.team == null ? S.projects
+       : S.projects.filter(p => p.team_id === S.team);
+}
+function renderTeamChip() {
+  const c = $("#teamChip");
+  const opts = teamOptions();
+  if (!opts.includes(S.team)) S.team = opts[0];
+  c.style.display = "";
+  c.textContent = S.team == null ? "全團隊" : teamName(S.team);
+  c.onclick = () => {
+    const i = opts.indexOf(S.team);
+    S.team = opts[(i + 1) % opts.length];
+    renderTeamChip(); render();
+  };
+}
+
 function canEdit(pid) {
   if (!S.auth.enabled) return true;
   if (!S.me) return false;
@@ -331,7 +378,7 @@ function renderLogin(msg) {
   const box = el("div", { class: "state-msg" });
   if (msg) box.append(el("div", { style: "color:var(--red);margin-bottom:10px" }, msg));
   box.append(el("div", { style: "font-size:16px;color:var(--navy);font-weight:600" },
-                "專案期程預算總表"),
+                "專案管理系統"),
              el("div", { style: "margin:6px 0 16px;color:var(--ink2)" },
                 "請使用 Google 帳號登入"),
              el("div", { id: "gbtn", style: "display:flex;justify-content:center" }));
@@ -509,65 +556,95 @@ const storedW = (key, def) => Number(localStorage.getItem(key)) || def;
 /* ============================== 總表 ============================== */
 function render() {
   if (S.view === "users") return renderUsers();
-  if (!S.projects.length) {
-    $("#content").innerHTML =
-      `<div class="state-msg">此年度尚無專案,點右上「＋ 新增專案」開始建立</div>`;
-    return;
-  }
+  if (!viewProjects().length) return renderTable();  // 空狀態訊息由 renderTable 處理
   if (S.view === "table") renderTable(); else renderGantt();
 }
 
 function renderTable() {
-  const head = ["狀態","案名","契約號","SO number","履約起","履約迄","工期",
-                "參與人員","決標金額","各年度預估認列","備註"];
-  const ths = head.map(h => el("th", {}, h));
-  const nameTh = ths[1];
-  nameTh.style.width = storedW("pm_namew", 220) + "px";
-  nameTh.append(colResizer({
-    get: () => parseFloat(nameTh.style.width),
-    set: (w) => { nameTh.style.width = w + "px"; },
-    key: "pm_namew", min: 110, max: 620 }));
-  const thead = el("thead", {}, el("tr", {}, ...ths));
-  const tbody = el("tbody");
-  for (const p of S.projects) {
-    const budgets = el("td", {}, ...p.budgets.map(b =>
-      el("span", { class: `budget-chip yc${b.year % 6}` +
-                          (b.year === S.year ? " cur" : ""),
-        title: b.year === S.year ? "目前檢視年度" : "" },
-        el("span", { class: "by" }, String(b.year)),
-        el("span", { class: "ba" }, fmtAmt(b.amount)))));
-    tbody.append(el("tr", { class: "row", onclick: () => openModal(p) },
-      el("td", {}, el("span", { class: "badge " + p.status }, STATUS_TXT[p.status] || p.status)),
-      el("td", { class: "name" }, p.name,
-        ...(p.warranty_years ? [el("span", { class: "wty" },
-            `保固${p.warranty_years}年`)] : [])),
-      el("td", {}, p.contract_no || "—"),
-      el("td", {}, p.so_number || "—"),
-      el("td", { class: "num" }, rocDate(p.start_date)),
-      el("td", { class: "num" }, rocDate(p.end_date)),
-      el("td", { class: "num" }, fmtDur(p.duration_days)),
-      el("td", {}, p.participants || "—"),
-      el("td", { class: "num" }, fmtAmt(p.awarded_amount)),
-      budgets,
-      el("td", { class: "notes" }, p.notes || ""),
-    ));
+  const list = viewProjects();
+  if (!list.length) {
+    $("#content").innerHTML =
+      `<div class="state-msg">${S.team != null ? "此團隊在本年度尚無專案" :
+        "此年度尚無專案,點右上「＋ 新增專案」開始建立"}</div>`;
+    return;
   }
-  // 小計:決標金額加總、各年度認列分項加總
-  const awardedSum = S.projects.reduce(
-    (s, p) => s + (p.awarded_amount ?? 0), 0);
+  // 欄位定義 (f = 權限矩陣鍵;canSee 為 invisible 者整欄隱藏)
+  const COLS = [
+    { f: "nda", h: "保密文件", cell: (p) => el("td", {},
+        p.nda_date ? rocDate(p.nda_date) : "—",
+        ...(p.nda_scan ? [el("span", { class: "scan", title: "已有掃描檔" }, "📎")] : [])) },
+    { f: "contract", h: "合約", cell: (p) => el("td", {},
+        p.contract_scan
+          ? el("span", { class: "scan ok", title: "已收到合約掃檔" }, "📄")
+          : el("span", { class: "scan none", title: "尚未收到合約掃檔" }, "—")) },
+    { f: "name", h: "案名", cell: (p) => el("td", { class: "name" }, p.name,
+        ...(p.warranty_years ? [el("span", { class: "wty" },
+            `保固${p.warranty_years}年`)] : [])) },
+    { f: "contract_no", h: "契約號", cell: (p) => el("td", {}, p.contract_no || "—") },
+    { f: "so_number", h: "SO number", cell: (p) => el("td", {}, p.so_number || "—") },
+    { f: "schedule", h: "履約起", cell: (p) => el("td", { class: "num" }, rocDate(p.start_date)) },
+    { f: "schedule", h: "履約迄", cell: (p) => el("td", { class: "num" }, rocDate(p.end_date)) },
+    { f: "schedule", h: "工期", cell: (p) => el("td", { class: "num" }, fmtDur(p.duration_days)) },
+    { f: "participants", h: "參與人員", cell: (p) => el("td", {}, p.participants || "—") },
+    { f: "awarded_amount", h: "決標金額", key: "awarded",
+      cell: (p) => el("td", { class: "num" }, fmtAmt(p.awarded_amount)) },
+    { f: "budgets", h: "各年度預估認列", key: "budgets", cell: (p) => el("td", {},
+        ...(p.budgets || []).map(b =>
+          el("span", { class: `budget-chip yc${b.year % 6}` +
+                              (b.year === S.year ? " cur" : "") },
+            el("span", { class: "by" }, String(b.year)),
+            el("span", { class: "ba" }, fmtAmt(b.amount))))) },
+    { f: "notes", h: "備註", cell: (p) => el("td", { class: "notes" }, p.notes || "") },
+  ].filter(c => canSee(c.f));
+
+  const thead = el("thead", {}, el("tr", {}, ...COLS.map(c => {
+    const th = el("th", {}, c.h);
+    if (c.f === "name") {
+      th.style.width = storedW("pm_namew", 220) + "px";
+      th.append(colResizer({
+        get: () => parseFloat(th.style.width),
+        set: (w) => { th.style.width = w + "px"; },
+        key: "pm_namew", min: 110, max: 620 }));
+    }
+    return th;
+  })));
+
+  // D.a 依狀態分組
+  const GROUPS = [["ongoing", "進行中"], ["not_awarded", "未成案"], ["closed", "已結案"]];
+  const tbody = el("tbody");
+  for (const [st, label] of GROUPS) {
+    const rows = list.filter(p => p.status === st);
+    if (!rows.length) continue;
+    tbody.append(el("tr", { class: "grp" },
+      el("td", { colspan: String(COLS.length), class: "grp-td " + st },
+        `${label}(${rows.length})`)));
+    for (const p of rows)
+      tbody.append(el("tr", { class: "row", onclick: () => openModal(p) },
+        ...COLS.map(c => c.cell(p))));
+  }
+
+  // 小計 (依可見欄位動態對位)
+  const awardedSum = list.reduce((s, p) => s + (p.awarded_amount ?? 0), 0);
   const byYear = {};
-  for (const p of S.projects)
-    for (const b of p.budgets)
+  for (const p of list)
+    for (const b of (p.budgets || []))
       byYear[b.year] = (byYear[b.year] || 0) + (b.amount || 0);
-  const yearChips = Object.keys(byYear).map(Number).sort().map(y =>
-    el("span", { class: `budget-chip yc${y % 6}` + (y === S.year ? " cur" : "") },
-      el("span", { class: "by" }, String(y)),
-      el("span", { class: "ba" }, fmtAmt(byYear[y]))));
-  const tfoot = el("tfoot", {}, el("tr", {},
-    el("td", { class: "lbl", colspan: "8" }, `小計(${S.projects.length} 案)`),
-    el("td", { class: "num" }, fmtAmt(awardedSum)),
-    el("td", {}, ...yearChips),
-    el("td", {})));
+  const firstTotal = COLS.findIndex(c => c.key === "awarded" || c.key === "budgets");
+  const cells = [];
+  if (firstTotal > 0)
+    cells.push(el("td", { class: "lbl", colspan: String(firstTotal) },
+      `小計(${list.length} 案)`));
+  for (let i = Math.max(firstTotal, 0); i < COLS.length; i++) {
+    const c = COLS[i];
+    if (c.key === "awarded") cells.push(el("td", { class: "num" }, fmtAmt(awardedSum)));
+    else if (c.key === "budgets") cells.push(el("td", {},
+      ...Object.keys(byYear).map(Number).sort().map(y =>
+        el("span", { class: `budget-chip yc${y % 6}` + (y === S.year ? " cur" : "") },
+          el("span", { class: "by" }, String(y)),
+          el("span", { class: "ba" }, fmtAmt(byYear[y]))))));
+    else cells.push(el("td", {}));
+  }
+  const tfoot = el("tfoot", {}, el("tr", {}, ...cells));
 
   const wrap = el("div", { class: "tbl-wrap" },
     el("table", {}, thead, tbody, tfoot));
@@ -592,8 +669,9 @@ function ganttRange() {
 }
 
 function renderGantt() {
-  const dated = S.projects.filter(p => p.start_date && p.end_date);
-  const undated = S.projects.filter(p => !p.start_date || !p.end_date);
+  const vp = viewProjects();
+  const dated = vp.filter(p => p.start_date && p.end_date);
+  const undated = vp.filter(p => !p.start_date || !p.end_date);
   const { lo, hi } = ganttRange();
   const px = S.pxPerDay;
   const totalDays = Math.round((hi - lo) / DAY);
@@ -726,7 +804,7 @@ ${rocDate(m.date)}</title></path>`;
   scroll.addEventListener("click", (ev) => {
     const g = ev.target.closest("g.bar");
     if (!g) return;
-    const p = S.projects.find(x => x.id === Number(g.dataset.id));
+    const p = viewProjects().find(x => x.id === Number(g.dataset.id));
     if (p) openModal(p);
   });
 
@@ -779,12 +857,43 @@ function esc(s) {
 const ROLE_TXT = { admin:"管理者", pm:"專案經理", dept_head:"部門主管",
                    sales:"業務人員", dev:"開發人員" };
 async function renderUsers() {
-  let users;
-  try { users = await api("/users"); }
-  catch (e) { $("#content").innerHTML =
+  let users, perms;
+  try {
+    [users, S.teams, perms] = await Promise.all(
+      [api("/users"), api("/teams"), api("/perms")]);
+    S.perms = perms;
+  } catch (e) { $("#content").innerHTML =
     `<div class="state-msg">${esc(e.message)}</div>`; return; }
+  const wrap = el("div", { style: "padding:12px" });
+
+  /* ---- 團隊管理列 ---- */
+  const teamBar = el("div", { style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px" },
+    el("span", { style: "color:var(--ink2);font-size:13px" }, "團隊:"));
+  for (const tm of S.teams) {
+    teamBar.append(el("span", { class: "badge ongoing", style: "font-size:13px;padding:3px 10px" },
+      tm.name, el("button", { style: "border:0;background:none;color:var(--red);margin-left:5px;cursor:pointer",
+        title: "刪除團隊", onclick: async () => {
+          if (!confirm(`刪除團隊「${tm.name}」?(仍有專案或成員歸屬時會被擋下)`)) return;
+          try { await api(`/teams/${tm.id}`, { method: "DELETE" });
+            toast("已刪除團隊"); renderUsers(); }
+          catch (e) { toast(e.message, true); }
+        }}, "✕")));
+  }
+  const newTeam = el("input", { placeholder: "新團隊名稱",
+    style: "border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--panel);color:var(--ink)" });
+  teamBar.append(newTeam, el("button", { class: "btn", onclick: async () => {
+    if (!newTeam.value.trim()) return;
+    try { await api("/teams", { method: "POST",
+        body: JSON.stringify({ name: newTeam.value.trim() }) });
+      toast("已建立團隊"); renderUsers(); }
+    catch (e) { toast(e.message, true); }
+  }}, "＋ 新增團隊"));
+  wrap.append(teamBar);
+
+  /* ---- 使用者列表 (含團隊歸屬 B.a) ---- */
   const thead = el("thead", {}, el("tr", {},
-    ...["Email","姓名","角色","狀態","全域編輯","",""].map(h => el("th", {}, h))));
+    ...["Email","姓名","角色","狀態","全域編輯","團隊歸屬(勾選)與團隊角色","",""]
+      .map(h => el("th", {}, h))));
   const tbody = el("tbody");
   const myId = S.me ? S.me.user.id : -1;
   for (const u of users) {
@@ -798,17 +907,45 @@ async function renderUsers() {
     stSel.value = u.status;
     const ce = el("input", { type: "checkbox" });
     ce.checked = !!u.can_edit;
+    // 團隊歸屬:每團隊一個勾選 + 團隊角色下拉
+    const memberOf = new Map((u.teams || []).map(m => [m.team_id, m.role]));
+    const teamCell = el("td", { style: "text-align:left" });
+    const teamRows = [];
+    const lockTeams = u.status !== "active";   // 待核准/停用不歸屬任何團隊
+    for (const tm of S.teams) {
+      const cb = el("input", { type: "checkbox" });
+      cb.checked = memberOf.has(tm.id);
+      const rs = el("select", {},
+        ...["pm","dept_head","sales","dev"].map(v =>
+          el("option", { value: v }, ROLE_TXT[v])));
+      rs.value = memberOf.get(tm.id) || "dev";
+      rs.style.display = cb.checked ? "" : "none";
+      cb.addEventListener("change", () =>
+        rs.style.display = cb.checked ? "" : "none");
+      if (lockTeams) { cb.checked = false; cb.disabled = rs.disabled = true;
+                       rs.style.display = "none"; }
+      teamRows.push({ team_id: tm.id, cb, rs });
+      teamCell.append(el("label",
+        { style: "display:flex;gap:4px;align-items:center;font-size:12.5px;margin:2px 0" },
+        cb, tm.name, rs));
+    }
+    if (!S.teams.length) teamCell.append("(尚無團隊)");
+    if (lockTeams && S.teams.length)
+      teamCell.append(el("div", { style: "font-size:11.5px;color:var(--ink2)" },
+        "待核准/停用者不歸屬團隊"));
     const self = u.id === myId;
     if (self) { roleSel.disabled = stSel.disabled = ce.disabled = true; }
     const saveBtn = el("button", { class: "btn", onclick: async () => {
       try {
         await api(`/users/${u.id}`, { method: "PUT", body: JSON.stringify({
-          role: roleSel.value, status: stSel.value, can_edit: ce.checked ? 1 : 0 })});
+          role: roleSel.value, status: stSel.value, can_edit: ce.checked ? 1 : 0,
+          teams: teamRows.filter(r => r.cb.checked)
+            .map(r => ({ team_id: r.team_id, role: r.rs.value })) })});
         toast("已更新 " + u.email); renderUsers();
       } catch (e) { toast(e.message, true); }
     }}, "儲存");
     const delBtn = el("button", { class: "btn danger", onclick: async () => {
-      if (!confirm(`刪除使用者 ${u.email}?其編輯授權將一併移除`)) return;
+      if (!confirm(`刪除使用者 ${u.email}?其團隊歸屬與編輯授權一併移除`)) return;
       try { await api(`/users/${u.id}`, { method: "DELETE" });
         toast("已刪除"); renderUsers(); }
       catch (e) { toast(e.message, true); }
@@ -818,12 +955,49 @@ async function renderUsers() {
       el("td", {}, u.email + (self ? "(你)" : "")),
       el("td", {}, u.name || "—"),
       el("td", {}, roleSel), el("td", {}, stSel), el("td", {}, ce),
-      el("td", {}, saveBtn), el("td", {}, delBtn));
+      teamCell, el("td", {}, saveBtn), el("td", {}, delBtn));
     if (u.status === "pending") tr.style.background = "var(--amber-bg)";
     tbody.append(tr);
   }
-  const wrap = el("div", { class: "tbl-wrap" },
-    el("table", { style: "min-width:720px" }, thead, tbody));
+  wrap.append(el("div", { class: "tbl-wrap" },
+    el("table", { style: "min-width:860px" }, thead, tbody)));
+
+  /* ---- 欄位權限矩陣 (B.a 下半) ---- */
+  wrap.append(el("div", { style: "margin:18px 0 6px;font-weight:600;color:var(--navy)" },
+    "欄位權限矩陣(管理者不受限;未設定 = 可編輯)"));
+  const mh = el("thead", {}, el("tr", {}, el("th", {}, "欄位"),
+    ...S.perms.roles.map(r => el("th", {}, ROLE_TXT[r] || r))));
+  const mb = el("tbody");
+  const sels = [];   // {role, field, sel}
+  for (const fdef of S.perms.fields) {
+    const tr = el("tr", {}, el("td", { style: "text-align:left" }, fdef.label));
+    for (const role of S.perms.roles) {
+      const sel = el("select", {},
+        el("option", { value: "writable" }, "可編輯"),
+        el("option", { value: "readonly" }, "唯讀"),
+        el("option", { value: "invisible" }, "不可見"));
+      sel.value = (S.perms.matrix[role] || {})[fdef.key] || "writable";
+      sels.push({ role, field: fdef.key, sel });
+      tr.append(el("td", {}, sel));
+    }
+    mb.append(tr);
+  }
+  wrap.append(el("div", { class: "tbl-wrap" },
+    el("table", { style: "min-width:620px" }, mh, mb)));
+  wrap.append(el("div", { style: "margin-top:10px" },
+    el("button", { class: "btn primary", onclick: async () => {
+      const matrix = {};
+      for (const { role, field, sel } of sels) {
+        if (sel.value === "writable") continue;
+        (matrix[role] = matrix[role] || {})[field] = sel.value;
+      }
+      try { S.perms = await api("/perms", { method: "PUT",
+          body: JSON.stringify({ matrix }) });
+        S.perms = await api("/perms");
+        toast("已儲存欄位權限矩陣"); }
+      catch (e) { toast(e.message, true); }
+    }}, "儲存矩陣")));
+
   $("#content").replaceChildren(wrap);
 }
 
@@ -911,6 +1085,22 @@ function openModal(p) {
     el("label", {}, "決標金額", f.awarded_amount = el("input", { type: "number", value: d.awarded_amount ?? "" })),
     el("label", {}, "保固(年)", f.warranty_years = el("input",
       { type: "number", min: "0", max: "50", value: d.warranty_years ?? "" })),
+    el("label", {}, "團隊", f.team_id = (() => {
+      const s = el("select", {}, el("option", { value: "" }, "未指定"),
+        ...S.teams.map(tm => el("option", { value: String(tm.id) }, tm.name)));
+      s.value = d.team_id != null ? String(d.team_id) : "";
+      return s;
+    })()),
+    el("label", {}, "合約掃檔", f.contract_scan = (() => {
+      const c = el("input", { type: "checkbox" });
+      c.checked = !!d.contract_scan; return c;
+    })()),
+    el("label", {}, "保密文件簽署日", f.nda_date =
+      el("input", { type: "date", value: d.nda_date || "" })),
+    el("label", {}, "保密文件掃描檔", f.nda_scan = (() => {
+      const c = el("input", { type: "checkbox" });
+      c.checked = !!d.nda_scan; return c;
+    })()),
     el("label", { class: "full" }, "參與人員(逗號分隔)", f.participants = el("input", { value: d.participants || "" })),
     el("label", { class: "full" }, "各年度預估認列", budBox,
       el("button", { class: "btn", type: "button", onclick: () => addBudRow() }, "＋ 加一個年度")),
@@ -930,6 +1120,32 @@ function openModal(p) {
     el("button", { class: "btn", onclick: () => close() }, "取消"),
     el("button", { class: "btn primary", onclick: save }, isNew ? "建立專案" : "儲存變更"));
 
+  // 欄位權限:控制項 -> 矩陣鍵
+  const FKEY = { name: "name", contract_no: "contract_no", part_no: "part_no",
+    so_number: "so_number", start_date: "schedule", end_date: "schedule",
+    kickoff_date: "schedule", participants: "participants",
+    awarded_amount: "awarded_amount", warranty_years: "warranty",
+    team_id: "team", contract_scan: "contract", nda_date: "nda",
+    nda_scan: "nda", notes: "notes" };
+  for (const [k, input] of Object.entries(f)) {
+    const fk = FKEY[k];
+    if (!fk) continue;
+    if (!canSee(fk)) input.closest("label").style.display = "none";
+    else if (!canWrite(fk)) input.disabled = true;
+  }
+  if (!canSee("budgets")) budBox.closest ? null : null;
+  const budLabel = budBox.parentElement;   // label.full
+  if (budLabel) {
+    if (!canSee("budgets")) budLabel.style.display = "none";
+    else if (!canWrite("budgets"))
+      budLabel.querySelectorAll("input,button").forEach(x => x.disabled = true);
+  }
+  const msLabel = msBox.parentElement;
+  if (msLabel) {
+    if (!canSee("schedule")) msLabel.style.display = "none";
+    else if (!canWrite("schedule"))
+      msLabel.querySelectorAll("input,button").forEach(x => x.disabled = true);
+  }
   const editable = isNew ? canCreate() : canEdit(d.id);
   if (!editable) {
     frm.querySelectorAll("input,select,textarea,button").forEach(x => x.disabled = true);
@@ -961,6 +1177,10 @@ function openModal(p) {
       kickoff_date: f.kickoff_date.value || null,
       awarded_amount: f.awarded_amount.value === "" ? null : Number(f.awarded_amount.value),
       warranty_years: f.warranty_years.value === "" ? null : Number(f.warranty_years.value),
+      team_id: f.team_id.value === "" ? null : Number(f.team_id.value),
+      contract_scan: f.contract_scan.checked ? 1 : 0,
+      nda_date: f.nda_date.value || null,
+      nda_scan: f.nda_scan.checked ? 1 : 0,
       participants: f.participants.value.trim(), notes: f.notes.value.trim(),
       budgets: [...budBox.querySelectorAll(".bud-row")].map(r => ({
         year: Number(r.querySelector(".y").value),
@@ -983,7 +1203,11 @@ function openModal(p) {
   }
 }
 
-async function refresh() { await loadYears(); await loadProjects(); }
+async function loadMeta() {
+  [S.teams, S.perms] = await Promise.all([api("/teams"), api("/perms")]);
+  renderTeamChip();
+}
+async function refresh() { await loadMeta(); await loadYears(); await loadProjects(); }
 
 /* 視窗尺寸/轉向改變時重繪目前視圖 (橫豎屏切換即時適應) */
 let resizeT = null;
