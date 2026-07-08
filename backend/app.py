@@ -77,16 +77,44 @@ def load_perm_matrix(db):
     return m
 
 
-def requester_role():
+LEVEL_RANK = {"invisible": 0, "readonly": 1, "writable": 2}
+
+
+def effective_roles(db):
+    """請求者的有效角色集合 = 各團隊角色;無團隊歸屬視為 dev (最小權限檢視者)。
+    管理者/開發模式回傳 None 表示不受限。"""
     u = getattr(g, "user", None)
-    return u["role"] if u else "admin"   # 未啟用登入 = 開發模式,不過濾
+    if u is None or u["role"] == "admin":
+        return None
+    roles = {r["role"] for r in db.execute(
+        "SELECT role FROM team_members WHERE user_id = ?", (u["id"],))}
+    return roles or {"dev"}
+
+
+def effective_levels(db):
+    """{矩陣鍵: level},多重角色取最寬鬆;None = 不受限"""
+    roles = effective_roles(db)
+    if roles is None:
+        return None
+    matrix = load_perm_matrix(db)
+    out = {}
+    for fkey in FIELD_MAP:
+        best = max(LEVEL_RANK[(matrix.get(r) or {}).get(fkey, "writable")]
+                   for r in roles)
+        out[fkey] = ["invisible", "readonly", "writable"][best]
+    return out
+
+
+def hide_not_awarded(db):
+    """B.a:開發人員 (有效角色僅 dev) 看不到未成案"""
+    roles = effective_roles(db)
+    return roles is not None and roles <= {"dev"}
 
 
 def strip_invisible(d, db):
-    role = requester_role()
-    if role == "admin":
+    levels = effective_levels(db)
+    if levels is None:
         return d
-    levels = load_perm_matrix(db).get(role, {})
     for fkey, level in levels.items():
         if level == "invisible":
             for col in FIELD_MAP[fkey]:
@@ -96,11 +124,10 @@ def strip_invisible(d, db):
 
 def writable_fields(db):
     """回傳目前請求者不可寫的實際欄位集合"""
-    role = requester_role()
-    if role == "admin":
+    levels = effective_levels(db)
+    if levels is None:
         return set()
     blocked = set()
-    levels = load_perm_matrix(db).get(role, {})
     for fkey, level in levels.items():
         if level in ("invisible", "readonly"):
             blocked.update(FIELD_MAP[fkey])
@@ -333,6 +360,8 @@ def list_projects():
     db = get_db()
     sql = "SELECT * FROM projects WHERE deleted = 0"
     args = []
+    if hide_not_awarded(db):
+        sql += " AND status != 'not_awarded'"
     if year:
         sql += " AND year = ?"
         args.append(year)
@@ -365,6 +394,8 @@ def get_project(pid):
     p = fetch_project(db, pid)
     if p is None:
         return jsonify({"error": "找不到專案"}), 404
+    if hide_not_awarded(db) and p.get("status") == "not_awarded":
+        return jsonify({"error": "找不到專案"}), 404
     return jsonify(strip_invisible(p, db))
 
 
@@ -380,6 +411,14 @@ def create_project():
     fields, err = validate_project(data)
     if err:
         return jsonify({"error": err}), 400
+    u = getattr(g, "user", None)
+    if u is not None and u["role"] != "admin":
+        tid = fields.get("team_id")
+        ok = tid is not None and db.execute(
+            "SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?",
+            (tid, u["id"])).fetchone()
+        if not ok:
+            return jsonify({"error": "請指定你所屬的團隊"}), 403
     cols = ", ".join(fields)
     marks = ", ".join("?" * len(fields))
     cur = db.execute(
@@ -466,7 +505,7 @@ def delete_project(pid):
 
 
 @app.post("/api/years/<int:new_year>/init")
-@EDIT_GLOBAL
+@ADMIN
 def init_year(new_year):
     """建立新年度:把履約期跨入新年度的進行中專案「複製」一份到新年度。
 
@@ -521,16 +560,26 @@ def auth_config():
 
 
 def _me_payload(db, user):
-    if user["role"] == "admin" or user["can_edit"]:
-        editable = "all"
+    teams = user_teams(db, user["id"])
+    editable = "all" if user["role"] == "admin" else [m["team_id"] for m in teams]
+    # my_levels:此使用者對每個矩陣欄位的有效等級 (admin=全 writable)
+    if user["role"] == "admin":
+        my_levels = {k: "writable" for k in FIELD_MAP}
     else:
-        editable = [r["project_id"] for r in db.execute(
-            "SELECT project_id FROM project_editors WHERE user_id = ?",
-            (user["id"],))]
+        roles = {m["role"] for m in teams} or {"dev"}
+        matrix = load_perm_matrix(db)
+        my_levels = {}
+        for fkey in FIELD_MAP:
+            best = max(LEVEL_RANK[(matrix.get(r) or {}).get(fkey, "writable")]
+                       for r in roles)
+            my_levels[fkey] = ["invisible", "readonly", "writable"][best]
     return {"user": {k: user[k] for k in
                      ("id", "email", "name", "role", "status", "can_edit")},
-            "teams": user_teams(db, user["id"]),
-            "editable": editable}
+            "teams": teams,
+            "editable": editable,
+            "my_levels": my_levels,
+            "hide_not_awarded": user["role"] != "admin" and
+                                ({m["role"] for m in teams} or {"dev"}) <= {"dev"}}
 
 
 @app.post("/api/auth/google")
@@ -707,9 +756,8 @@ def update_user(uid):
         return jsonify({"error": "不可修改自己的權限 (避免誤鎖)"}), 400
     data = request.get_json(silent=True) or {}
     fields = {k: data[k] for k in USER_EDITABLE if k in data}
-    if "role" in fields and fields["role"] not in (
-            "admin", "pm", "dept_head", "sales", "dev"):
-        return jsonify({"error": "無效的角色"}), 400
+    if "role" in fields and fields["role"] not in ("admin", "dev"):
+        return jsonify({"error": "角色僅接受 admin(管理者)/dev(一般成員)"}), 400
     if "status" in fields and fields["status"] not in (
             "pending", "active", "disabled"):
         return jsonify({"error": "無效的狀態"}), 400

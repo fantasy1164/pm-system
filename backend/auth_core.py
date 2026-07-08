@@ -31,7 +31,7 @@ from flask import g, jsonify, request
 AUTH_ENABLED = os.environ.get("PM_AUTH_ENABLED") == "1"
 JWT_SECRET = os.environ.get("PM_JWT_SECRET", "")
 OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-ADMIN_EMAIL = os.environ.get("PM_ADMIN_EMAIL", "").lower()
+ADMIN_EMAIL = os.environ.get("PM_ADMIN_EMAIL", "").strip().lower()
 TEST_MODE = os.environ.get("PM_AUTH_TEST_MODE") == "1"
 TOKEN_MINUTES = 30          # JWT 有效期 = idle 上限
 RENEW_BELOW = 25 * 60       # 剩餘秒數低於此值即換發 (滑動續期)
@@ -107,14 +107,21 @@ def require_auth(get_db):
 
 
 def can_edit_project(db, user, project_id):
-    if user["role"] == "admin" or user["can_edit"]:
+    """編輯權 = 管理者,或屬於該專案團隊的成員 (欄位層級另由矩陣控管)。
+    project_id None (新增) → 有任一團隊歸屬即可,團隊限制由 handler 檢查。"""
+    if user["role"] == "admin":
         return True
     if project_id is None:
-        return False
+        return db.execute("SELECT 1 FROM team_members WHERE user_id = ?",
+                          (user["id"],)).fetchone() is not None
     row = db.execute(
-        "SELECT 1 FROM project_editors WHERE project_id = ? AND user_id = ?",
-        (project_id, user["id"])).fetchone()
-    return row is not None
+        "SELECT p.team_id FROM projects p WHERE p.id = ?",
+        (project_id,)).fetchone()
+    if row is None or row["team_id"] is None:
+        return False   # 未指定團隊的專案僅管理者可編輯
+    return db.execute(
+        "SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?",
+        (row["team_id"], user["id"])).fetchone() is not None
 
 
 def require_edit(get_db, project_id_arg=None):

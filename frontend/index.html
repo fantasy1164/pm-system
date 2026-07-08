@@ -305,9 +305,8 @@ async function api(path, opts = {}) {
 /* ============================== 登入 / 權限 ============================== */
 function permLevel(fkey) {
   if (!S.auth.enabled) return "writable";
-  const role = S.me && S.me.user.role;
-  if (role === "admin") return "writable";
-  return (S.perms.matrix[role] || {})[fkey] || "writable";
+  if (!S.me) return "invisible";
+  return (S.me.my_levels || {})[fkey] || "writable";
 }
 const canSee = (f) => permLevel(f) !== "invisible";
 const canWrite = (f) => permLevel(f) === "writable";
@@ -316,12 +315,13 @@ function teamName(id) {
   const x = S.teams.find(t => t.id === id);
   return x ? x.name : "未指定";
 }
-function teamOptions() {   // C.a:可切換的團隊清單 (null=全團隊)
+function teamOptions() {   // 可切換的團隊清單 (null=全團隊)
   if (!S.auth.enabled || isAdmin())
     return [null, ...S.teams.map(t => t.id)];
   const mine = ((S.me && S.me.teams) || []).map(m => m.team_id);
-  if (mine.length <= 1) return mine.length ? [null, ...mine] : [null];
-  return [null, ...mine];
+  if (mine.length === 1) return [mine[0]];      // C:單一團隊直接鎖定顯示,不循環
+  if (mine.length === 0) return [null];         // 無團隊:顯示全團隊 (檢視全部)
+  return [null, ...mine];                        // 多團隊:全團隊 + 各團隊循環
 }
 function viewProjects() {  // 依當前團隊過濾
   return S.team == null ? S.projects
@@ -333,21 +333,32 @@ function renderTeamChip() {
   if (!opts.includes(S.team)) S.team = opts[0];
   c.style.display = "";
   c.textContent = S.team == null ? "全團隊" : teamName(S.team);
-  c.onclick = () => {
+  const switchable = opts.length > 1;
+  c.title = switchable ? "點擊切換團隊" : "你所屬的團隊";
+  c.style.cursor = switchable ? "pointer" : "default";
+  c.onclick = switchable ? () => {
     const i = opts.indexOf(S.team);
     S.team = opts[(i + 1) % opts.length];
     renderTeamChip(); render();
-  };
+  } : null;
 }
 
+// editable = 可編輯的「團隊 id」清單;admin = "all"
+function projTeam(pid) {
+  const p = (S.projects || []).find(x => x.id === pid);
+  return p ? p.team_id : null;
+}
 function canEdit(pid) {
   if (!S.auth.enabled) return true;
   if (!S.me) return false;
-  return S.me.editable === "all" ||
-         (pid != null && S.me.editable.includes(pid));
+  if (S.me.editable === "all") return true;
+  const tid = projTeam(pid);
+  return tid != null && S.me.editable.includes(tid);
 }
 function canCreate() {
-  return !S.auth.enabled || (S.me && S.me.editable === "all");
+  if (!S.auth.enabled) return true;
+  if (!S.me) return false;
+  return S.me.editable === "all" || S.me.editable.length > 0; // 屬於任一團隊即可
 }
 function isAdmin() {
   return !S.auth.enabled || (S.me && S.me.user.role === "admin");
@@ -892,26 +903,30 @@ async function renderUsers() {
 
   /* ---- 使用者列表 (含團隊歸屬 B.a) ---- */
   const thead = el("thead", {}, el("tr", {},
-    ...["Email","姓名","角色","狀態","全域編輯","團隊歸屬(勾選)與團隊角色","",""]
+    ...["Email","姓名","管理者","狀態","團隊歸屬(勾選)與團隊角色","",""]
       .map(h => el("th", {}, h))));
   const tbody = el("tbody");
   const myId = S.me ? S.me.user.id : -1;
   for (const u of users) {
-    const roleSel = el("select", {},
-      ...Object.entries(ROLE_TXT).map(([v, txt]) => el("option", { value: v }, txt)));
-    roleSel.value = u.role;
+    const adminCb = el("input", { type: "checkbox" });
+    adminCb.checked = u.role === "admin";
     const stSel = el("select", {},
       el("option", { value: "pending" }, "待核准"),
       el("option", { value: "active" }, "啟用"),
       el("option", { value: "disabled" }, "停用"));
     stSel.value = u.status;
-    const ce = el("input", { type: "checkbox" });
-    ce.checked = !!u.can_edit;
     // 團隊歸屬:每團隊一個勾選 + 團隊角色下拉
     const memberOf = new Map((u.teams || []).map(m => [m.team_id, m.role]));
     const teamCell = el("td", { style: "text-align:left" });
     const teamRows = [];
-    const lockTeams = u.status !== "active";   // 待核准/停用不歸屬任何團隊
+    // 團隊區鎖定條件:非啟用、或勾了管理者 (A.d 管理者不須團隊歸屬)
+    const teamLockReason = () =>
+      u.id === myId ? null
+      : stSel.value !== "active" ? "待核准/停用者不歸屬團隊"
+      : adminCb.checked ? "管理者不須指定團隊 (全系統權限)"
+      : null;
+    let lockTeams = teamLockReason() !== null;
+    const teamHint = el("div", { style: "font-size:11.5px;color:var(--ink2)" });
     for (const tm of S.teams) {
       const cb = el("input", { type: "checkbox" });
       cb.checked = memberOf.has(tm.id);
@@ -919,27 +934,36 @@ async function renderUsers() {
         ...["pm","dept_head","sales","dev"].map(v =>
           el("option", { value: v }, ROLE_TXT[v])));
       rs.value = memberOf.get(tm.id) || "dev";
-      rs.style.display = cb.checked ? "" : "none";
       cb.addEventListener("change", () =>
-        rs.style.display = cb.checked ? "" : "none");
-      if (lockTeams) { cb.checked = false; cb.disabled = rs.disabled = true;
-                       rs.style.display = "none"; }
-      teamRows.push({ team_id: tm.id, cb, rs });
+        rs.style.display = (cb.checked && !cb.disabled) ? "" : "none");
+      teamRows.push({ team_id: tm.id, cb, rs, wasMember: memberOf.has(tm.id) });
       teamCell.append(el("label",
         { style: "display:flex;gap:4px;align-items:center;font-size:12.5px;margin:2px 0" },
         cb, tm.name, rs));
     }
     if (!S.teams.length) teamCell.append("(尚無團隊)");
-    if (lockTeams && S.teams.length)
-      teamCell.append(el("div", { style: "font-size:11.5px;color:var(--ink2)" },
-        "待核准/停用者不歸屬團隊"));
+    teamCell.append(teamHint);
+    const applyTeamLock = () => {
+      const reason = teamLockReason();
+      const locked = reason !== null;
+      for (const r of teamRows) {
+        r.cb.disabled = r.rs.disabled = locked;
+        if (locked) r.cb.checked = false;
+        else r.cb.checked = r.wasMember;
+        r.rs.style.display = (r.cb.checked && !locked) ? "" : "none";
+      }
+      teamHint.textContent = reason || "";
+    };
+    adminCb.addEventListener("change", applyTeamLock);
+    stSel.addEventListener("change", applyTeamLock);
+    applyTeamLock();
     const self = u.id === myId;
-    if (self) { roleSel.disabled = stSel.disabled = ce.disabled = true; }
+    if (self) { adminCb.disabled = stSel.disabled = true; }
     const saveBtn = el("button", { class: "btn", onclick: async () => {
       try {
         await api(`/users/${u.id}`, { method: "PUT", body: JSON.stringify({
-          role: roleSel.value, status: stSel.value, can_edit: ce.checked ? 1 : 0,
-          teams: teamRows.filter(r => r.cb.checked)
+          role: adminCb.checked ? "admin" : "dev", status: stSel.value,
+          teams: teamRows.filter(r => r.cb.checked && !r.cb.disabled)
             .map(r => ({ team_id: r.team_id, role: r.rs.value })) })});
         toast("已更新 " + u.email); renderUsers();
       } catch (e) { toast(e.message, true); }
@@ -954,7 +978,7 @@ async function renderUsers() {
     const tr = el("tr", {},
       el("td", {}, u.email + (self ? "(你)" : "")),
       el("td", {}, u.name || "—"),
-      el("td", {}, roleSel), el("td", {}, stSel), el("td", {}, ce),
+      el("td", {}, adminCb), el("td", {}, stSel),
       teamCell, el("td", {}, saveBtn), el("td", {}, delBtn));
     if (u.status === "pending") tr.style.background = "var(--amber-bg)";
     tbody.append(tr);
