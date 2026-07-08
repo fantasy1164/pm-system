@@ -355,6 +355,15 @@ function canEdit(pid) {
   const tid = projTeam(pid);
   return tid != null && S.me.editable.includes(tid);
 }
+// 是否為該專案的專案經理 (管理者恆真;否則須在該專案團隊中角色為 pm)
+function isProjectPM(pid) {
+  if (!S.auth.enabled) return true;   // 開發模式全開
+  if (!S.me) return false;
+  if (S.me.user.role === "admin") return true;
+  const tid = projTeam(pid);
+  if (tid == null) return false;
+  return (S.me.teams || []).some(m => m.team_id === tid && m.role === "pm");
+}
 function canCreate() {
   if (!S.auth.enabled) return true;
   if (!S.me) return false;
@@ -1135,15 +1144,19 @@ function openModal(p) {
   );
 
   const actions = el("div", { class: "modal-actions" });
-  if (!isNew) actions.append(el("button", { class: "btn danger", onclick: async () => {
-    if (!confirm(`確定刪除「${d.name}」?(可由異動紀錄追溯)`)) return;
-    try { await api(`/projects/${d.id}`, { method: "DELETE" });
-      toast("已刪除"); close(); await refresh(); }
-    catch (e) { toast(e.message, true); }
-  }}, "刪除"));
+  // 規則1:刪除鈕僅專案經理 (該專案團隊的 pm) 或管理者可見
+  if (!isNew && isProjectPM(d.id))
+    actions.append(el("button", { class: "btn danger", onclick: async () => {
+      if (!confirm(`確定刪除「${d.name}」?(可由異動紀錄追溯)`)) return;
+      try { await api(`/projects/${d.id}`, { method: "DELETE" });
+        toast("已刪除"); close(); await refresh(); }
+      catch (e) { toast(e.message, true); }
+    }}, "刪除"));
+  const saveBtn = el("button", { class: "btn primary", onclick: save },
+    isNew ? "建立專案" : "儲存變更");
   actions.append(
     el("button", { class: "btn", onclick: () => close() }, "取消"),
-    el("button", { class: "btn primary", onclick: save }, isNew ? "建立專案" : "儲存變更"));
+    saveBtn);
 
   // 欄位權限:控制項 -> 矩陣鍵
   const FKEY = { status: "status", name: "name", contract_no: "contract_no", part_no: "part_no",
@@ -1177,6 +1190,37 @@ function openModal(p) {
     actions.querySelectorAll(".primary,.danger").forEach(b => b.remove());
     actions.prepend(el("span", { style: "margin-right:auto;color:var(--ink2);font-size:12.5px" },
       "唯讀(無編輯權限,可向管理者申請)"));
+  } else if (!isNew) {
+    // 規則2~4:儲存鈕三態 (新增專案不套用,永遠可按)
+    const writables = frm.querySelectorAll(
+      "input:not([disabled]),select:not([disabled]),textarea:not([disabled])");
+    if (!writables.length) {
+      // 規則2:沒有任何可編輯欄位 → 隱藏儲存鈕
+      saveBtn.style.display = "none";
+      actions.prepend(el("span", { style: "margin-right:auto;color:var(--ink2);font-size:12.5px" },
+        "此專案對你而言所有欄位皆唯讀"));
+    } else {
+      // 規則3:有可編輯欄位但未異動 → 凍結;規則4:有異動 → 啟用
+      const snapshot = () => [...writables].map(x =>
+        x.type === "checkbox" ? (x.checked ? "1" : "0") : x.value).join("|~|");
+      const initial = snapshot();
+      const refreshDirty = () => {
+        const dirty = snapshot() !== initial;
+        saveBtn.disabled = !dirty;
+        saveBtn.title = dirty ? "" : "尚未有任何變更";
+      };
+      writables.forEach(x => {
+        x.addEventListener("input", refreshDirty);
+        x.addEventListener("change", refreshDirty);
+      });
+      // 預算/里程碑的增減 (新增/移除列) 也算異動
+      for (const box of [budBox, msBox]) {
+        const parentLabel = box.parentElement;
+        if (parentLabel) parentLabel.addEventListener("click", () =>
+          setTimeout(refreshDirty, 0));
+      }
+      refreshDirty();   // 初始:凍結
+    }
   }
   const modal = el("div", { class: "modal" },
     el("h2", {}, isNew ? `新增專案(${S.year} 年度)` : (editable ? "編輯專案" : "檢視專案")),
