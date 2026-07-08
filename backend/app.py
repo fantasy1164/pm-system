@@ -46,6 +46,7 @@ PROJECT_FIELDS = [
 # 欄位權限矩陣定義:矩陣欄位鍵 -> 實際資料欄位
 PERM_ROLES = ("pm", "dept_head", "sales", "dev")   # admin 永遠全開
 FIELD_MAP = {
+    "status":         ["status"],
     "nda":            ["nda_date", "nda_scan"],
     "contract":       ["contract_scan"],
     "name":           ["name"],
@@ -61,7 +62,8 @@ FIELD_MAP = {
     "team":           ["team_id"],
     "notes":          ["notes"],
 }
-FIELD_LABELS = [("nda", "保密文件"), ("contract", "合約"), ("name", "案名"),
+FIELD_LABELS = [("status", "狀態"), ("nda", "保密文件"),
+    ("contract", "合約"), ("name", "案名"),
     ("contract_no", "契約號"), ("part_no", "料號"), ("so_number", "SO number"),
     ("schedule", "期程/里程碑"), ("participants", "參與人員"),
     ("awarded_amount", "決標金額"), ("budgets", "預估認列"),
@@ -716,7 +718,12 @@ def put_perms():
         if role not in PERM_ROLES:
             continue
         for f, level in fields.items():
-            if f in valid_fields and level in ("invisible", "readonly"):
+            if f not in valid_fields:
+                continue
+            # 狀態是總表分組骨架,不可 invisible (最多 readonly)
+            if f == "status" and level == "invisible":
+                level = "readonly"
+            if level in ("invisible", "readonly"):
                 db.execute("INSERT INTO field_perms (role, field, level)"
                            " VALUES (?,?,?)", (role, f, level))
     write_audit(db, "update", "field_perms", 0, {"matrix": data})

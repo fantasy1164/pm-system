@@ -996,10 +996,11 @@ async function renderUsers() {
   for (const fdef of S.perms.fields) {
     const tr = el("tr", {}, el("td", { style: "text-align:left" }, fdef.label));
     for (const role of S.perms.roles) {
-      const sel = el("select", {},
-        el("option", { value: "writable" }, "可編輯"),
-        el("option", { value: "readonly" }, "唯讀"),
-        el("option", { value: "invisible" }, "不可見"));
+      const opts = [el("option", { value: "writable" }, "可編輯"),
+                    el("option", { value: "readonly" }, "唯讀")];
+      if (fdef.key !== "status")   // 狀態是總表分組骨架,不可隱藏
+        opts.push(el("option", { value: "invisible" }, "不可見"));
+      const sel = el("select", {}, ...opts);
       sel.value = (S.perms.matrix[role] || {})[fdef.key] || "writable";
       sels.push({ role, field: fdef.key, sel });
       tr.append(el("td", {}, sel));
@@ -1145,7 +1146,7 @@ function openModal(p) {
     el("button", { class: "btn primary", onclick: save }, isNew ? "建立專案" : "儲存變更"));
 
   // 欄位權限:控制項 -> 矩陣鍵
-  const FKEY = { name: "name", contract_no: "contract_no", part_no: "part_no",
+  const FKEY = { status: "status", name: "name", contract_no: "contract_no", part_no: "part_no",
     so_number: "so_number", start_date: "schedule", end_date: "schedule",
     kickoff_date: "schedule", participants: "participants",
     awarded_amount: "awarded_amount", warranty_years: "warranty",
@@ -1182,8 +1183,14 @@ function openModal(p) {
     frm);
   if (!isNew && S.auth.enabled && isAdmin()) modal.append(buildEditorsSection(d));
   modal.append(actions);
+  let downOnOverlay = false;
   const overlay = el("div", { class: "overlay",
-    onclick: (ev) => { if (ev.target === overlay) close(); } }, modal);
+    onpointerdown: (ev) => { downOnOverlay = (ev.target === overlay); },
+    onpointerup: (ev) => {
+      // 僅在「空白處按下且在空白處放開」才關閉;欄位內拖曳到外面不誤關
+      if (downOnOverlay && ev.target === overlay) close();
+      downOnOverlay = false;
+    } }, modal);
   document.body.append(overlay);
   const close = () => overlay.remove();
   if (editable) f.name.focus();
@@ -1229,6 +1236,8 @@ function openModal(p) {
 
 async function loadMeta() {
   [S.teams, S.perms] = await Promise.all([api("/teams"), api("/perms")]);
+  const opts = teamOptions();
+  if (!opts.includes(S.team)) S.team = opts[0];   // 單一團隊 → 直接該團隊
   renderTeamChip();
 }
 async function refresh() { await loadMeta(); await loadYears(); await loadProjects(); }
