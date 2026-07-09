@@ -46,13 +46,21 @@ class GmailMailer:
         return self._token
 
     def _from(self):
-        """寄件地址 = 授權帳號的 email,向 Gmail profile 查一次後快取"""
+        """寄件地址:優先用環境變數 PM_MAIL_FROM_ADDR (授權帳號 email);
+        未設定才向 Gmail profile 查詢 (查詢需 gmail 讀取權,某些情況會 403)。"""
         if self._from_addr:
+            return self._from_addr
+        env_addr = os.environ.get("PM_MAIL_FROM_ADDR", "").strip()
+        if env_addr:
+            self._from_addr = env_addr
             return self._from_addr
         r = self.rq.get(
             "https://gmail.googleapis.com/gmail/v1/users/me/profile",
             headers={"Authorization": "Bearer " + self._tok()}, timeout=30)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"查詢寄件者 profile 失敗 Gmail API {r.status_code}: "
+                f"{r.text[:400]} (可改設環境變數 PM_MAIL_FROM_ADDR 避開此查詢)")
         self._from_addr = r.json()["emailAddress"]
         return self._from_addr
 
