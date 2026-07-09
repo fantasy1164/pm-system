@@ -196,6 +196,7 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
     <button id="vTable" class="active">總表</button>
     <button id="vGantt">甘特圖</button>
     <button id="vUsers" style="display:none">權限設定</button>
+    <button id="vNotify" style="display:none">訊息通知</button>
   </div>
   <button class="btn primary" id="btnAdd">＋ 新增專案</button>
   <button class="btn" id="themeBtn" title="切換深/淺色主題">🌓</button>
@@ -376,6 +377,9 @@ function applyPerms() {
   $("#btnAdd").style.display = canCreate() ? "" : "none";
   $("#btnNewYear").style.display = canCreate() ? "" : "none";
   $("#vUsers").style.display = isAdmin() ? "" : "none";
+  const isAnyPM = isAdmin() ||
+    ((S.me && S.me.teams) || []).some(m => m.role === "pm");
+  $("#vNotify").style.display = (S.auth.enabled && isAnyPM) || !S.auth.enabled ? "" : "none";
 }
 function logout(msg) {
   setTok(null); S.me = null; clearTimeout(idleT);
@@ -509,9 +513,11 @@ $("#userChip").addEventListener("click", () => {
 $("#vTable").addEventListener("click", () => setView("table"));
 $("#vGantt").addEventListener("click", () => setView("gantt"));
 $("#vUsers").addEventListener("click", () => setView("users"));
+$("#vNotify").addEventListener("click", () => setView("notify"));
 function setView(v) {
   S.view = v;
-  for (const [id, name] of [["#vTable","table"],["#vGantt","gantt"],["#vUsers","users"]])
+  for (const [id, name] of [["#vTable","table"],["#vGantt","gantt"],
+                            ["#vUsers","users"],["#vNotify","notify"]])
     $(id).classList.toggle("active", v === name);
   render();
 }
@@ -576,6 +582,7 @@ const storedW = (key, def) => Number(localStorage.getItem(key)) || def;
 /* ============================== 總表 ============================== */
 function render() {
   if (S.view === "users") return renderUsers();
+  if (S.view === "notify") return renderNotify();
   if (!viewProjects().length) return renderTable();  // 空狀態訊息由 renderTable 處理
   if (S.view === "table") renderTable(); else renderGantt();
 }
@@ -668,6 +675,88 @@ function renderTable() {
 
   const wrap = el("div", { class: "tbl-wrap" },
     el("table", {}, thead, tbody, tfoot));
+  $("#content").replaceChildren(wrap);
+}
+
+async function renderNotify() {
+  let types, teams, history;
+  try {
+    [types, teams, history] = await Promise.all(
+      [api("/notify/types"), api("/teams"), api("/notify/history")]);
+  } catch (e) { $("#content").innerHTML =
+    `<div class="state-msg">${esc(e.message)}</div>`; return; }
+  S.teams = teams;
+  const ROLE_LBL = { pm: "專案經理", dept_head: "部門主管", sales: "業務", dev: "開發人員" };
+
+  // 我可管理的團隊:管理者=全部;否則=我擔任 pm 的團隊
+  const myPMteams = isAdmin() ? teams.map(t => t.id)
+    : ((S.me && S.me.teams) || []).filter(m => m.role === "pm").map(m => m.team_id);
+  const manage = teams.filter(t => myPMteams.includes(t.id));
+
+  const wrap = el("div", { style: "padding:12px" });
+  wrap.append(el("div", { style: "font-weight:600;color:var(--navy);margin-bottom:4px" },
+    "通知收件設定"),
+    el("div", { style: "color:var(--ink2);font-size:12.5px;margin-bottom:12px" },
+      "設定各團隊的通知要發給哪些角色(收件人取該角色成員的通知信箱)。"
+      + "「里程碑到期前幾天提醒」的天數在各專案的編輯視窗設定。"));
+
+  if (!manage.length) {
+    wrap.append(el("div", { class: "state-msg" }, "你目前不是任何團隊的專案經理"));
+  }
+  for (const tm of manage) {
+    const card = el("div", { style: "border:1px solid var(--line);border-radius:8px;"
+      + "padding:12px;margin-bottom:12px;background:var(--panel)" });
+    card.append(el("div", { style: "font-weight:600;margin-bottom:8px" }, "團隊:" + tm.name));
+    const matrix = await api(`/notify/matrix/${tm.id}`).then(r => r.matrix).catch(() => null);
+    if (!matrix) { card.append(el("div", { style: "color:var(--ink2)" }, "(讀取失敗)")); wrap.append(card); continue; }
+    const cells = [];
+    const mh = el("thead", {}, el("tr", {}, el("th", {}, "通知類型"),
+      ...types.roles.map(r => el("th", {}, ROLE_LBL[r] || r))));
+    const mb = el("tbody");
+    for (const nt of types.types) {
+      const tr = el("tr", {}, el("td", { style: "text-align:left" }, nt.label));
+      for (const role of types.roles) {
+        const cb = el("input", { type: "checkbox" });
+        cb.checked = !!(matrix[nt.key] || {})[role];
+        cells.push({ ntype: nt.key, role, cb });
+        tr.append(el("td", {}, cb));
+      }
+      mb.append(tr);
+    }
+    card.append(el("div", { class: "tbl-wrap" }, el("table", { style: "min-width:420px" }, mh, mb)));
+    card.append(el("div", { style: "margin-top:8px" },
+      el("button", { class: "btn primary", onclick: async () => {
+        const out = {};
+        for (const { ntype, role, cb } of cells)
+          if (cb.checked) (out[ntype] = out[ntype] || {})[role] = true;
+        try { await api(`/notify/matrix/${tm.id}`, { method: "PUT",
+            body: JSON.stringify({ matrix: out }) });
+          toast(`已儲存「${tm.name}」通知設定`); }
+        catch (e) { toast(e.message, true); }
+      }}, "儲存此團隊設定")));
+    wrap.append(card);
+  }
+
+  // 通知歷史
+  wrap.append(el("div", { style: "margin:18px 0 6px;font-weight:600;color:var(--navy)" },
+    "通知歷史(近 200 筆)"));
+  if (!history.length) {
+    wrap.append(el("div", { class: "state-msg" }, "尚無通知紀錄"));
+  } else {
+    const hh = el("thead", {}, el("tr", {},
+      ...["時間","類型","主旨","收件人","狀態"].map(h => el("th", {}, h))));
+    const STLBL = { sent: "已發送", dryrun: "乾跑", failed: "失敗", skipped: "略過" };
+    const hb = el("tbody");
+    for (const n of history) {
+      hb.append(el("tr", {},
+        el("td", {}, n.created_at),
+        el("td", {}, (types.types.find(t => t.key === n.ntype) || {}).label || n.ntype),
+        el("td", { style: "text-align:left" }, n.subject),
+        el("td", { style: "text-align:left;font-size:12px" }, n.recipients || "—"),
+        el("td", {}, STLBL[n.status] || n.status)));
+    }
+    wrap.append(el("div", { class: "tbl-wrap" }, el("table", { style: "min-width:720px" }, hh, hb)));
+  }
   $("#content").replaceChildren(wrap);
 }
 
@@ -912,7 +1001,7 @@ async function renderUsers() {
 
   /* ---- 使用者列表 (含團隊歸屬 B.a) ---- */
   const thead = el("thead", {}, el("tr", {},
-    ...["Email","姓名","管理者","狀態","團隊歸屬(勾選)與團隊角色","",""]
+    ...["Email","姓名","管理者","狀態","通知信箱","團隊歸屬(勾選)與團隊角色","",""]
       .map(h => el("th", {}, h))));
   const tbody = el("tbody");
   const myId = S.me ? S.me.user.id : -1;
@@ -966,12 +1055,16 @@ async function renderUsers() {
     adminCb.addEventListener("change", applyTeamLock);
     stSel.addEventListener("change", applyTeamLock);
     applyTeamLock();
+    const notifyIn = el("input", { type: "email", value: u.notify_email || "",
+      placeholder: "公司信箱", style: "width:160px;border:1px solid var(--line);"
+        + "border-radius:6px;padding:4px 8px;background:var(--panel);color:var(--ink)" });
     const self = u.id === myId;
     if (self) { adminCb.disabled = stSel.disabled = true; }
     const saveBtn = el("button", { class: "btn", onclick: async () => {
       try {
         await api(`/users/${u.id}`, { method: "PUT", body: JSON.stringify({
           role: adminCb.checked ? "admin" : "dev", status: stSel.value,
+          notify_email: notifyIn.value.trim(),
           teams: teamRows.filter(r => r.cb.checked && !r.cb.disabled)
             .map(r => ({ team_id: r.team_id, role: r.rs.value })) })});
         toast("已更新 " + u.email); renderUsers();
@@ -988,6 +1081,7 @@ async function renderUsers() {
       el("td", {}, u.email + (self ? "(你)" : "")),
       el("td", {}, u.name || "—"),
       el("td", {}, adminCb), el("td", {}, stSel),
+      el("td", {}, notifyIn),
       teamCell, el("td", {}, saveBtn), el("td", {}, delBtn));
     if (u.status === "pending") tr.style.background = "var(--amber-bg)";
     tbody.append(tr);
@@ -1119,6 +1213,9 @@ function openModal(p) {
     el("label", {}, "決標金額", f.awarded_amount = el("input", { type: "number", value: d.awarded_amount ?? "" })),
     el("label", {}, "保固(年)", f.warranty_years = el("input",
       { type: "number", min: "0", max: "50", value: d.warranty_years ?? "" })),
+    el("label", {}, "里程碑到期前幾天提醒", f.notify_days_before = el("input",
+      { type: "number", min: "0", max: "365", placeholder: "留空=不提醒",
+        value: d.notify_days_before ?? "" })),
     el("label", {}, "團隊", f.team_id = (() => {
       const s = el("select", {}, el("option", { value: "" }, "未指定"),
         ...S.teams.map(tm => el("option", { value: String(tm.id) }, tm.name)));
@@ -1161,7 +1258,8 @@ function openModal(p) {
   // 欄位權限:控制項 -> 矩陣鍵
   const FKEY = { status: "status", name: "name", contract_no: "contract_no", part_no: "part_no",
     so_number: "so_number", start_date: "schedule", end_date: "schedule",
-    kickoff_date: "schedule", participants: "participants",
+    kickoff_date: "schedule", notify_days_before: "schedule",
+    participants: "participants",
     awarded_amount: "awarded_amount", warranty_years: "warranty",
     team_id: "team", contract_scan: "contract", nda_date: "nda",
     nda_scan: "nda", notes: "notes" };
@@ -1252,6 +1350,7 @@ function openModal(p) {
       kickoff_date: f.kickoff_date.value || null,
       awarded_amount: f.awarded_amount.value === "" ? null : Number(f.awarded_amount.value),
       warranty_years: f.warranty_years.value === "" ? null : Number(f.warranty_years.value),
+      notify_days_before: f.notify_days_before.value === "" ? null : Number(f.notify_days_before.value),
       team_id: f.team_id.value === "" ? null : Number(f.team_id.value),
       contract_scan: f.contract_scan.checked ? 1 : 0,
       nda_date: f.nda_date.value || null,

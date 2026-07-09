@@ -8,6 +8,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     email       TEXT NOT NULL UNIQUE,
+    notify_email TEXT,                             -- 通知收件信箱 (公司信箱,與登入 gmail 分開)
     name        TEXT NOT NULL DEFAULT '',
     role        TEXT NOT NULL DEFAULT 'dev'
                 CHECK (role IN ('admin', 'pm', 'dept_head', 'sales', 'dev')),
@@ -35,6 +36,7 @@ CREATE TABLE IF NOT EXISTS projects (
     awarded_amount INTEGER,                       -- 決標金額 (NULL=未決標)
     kickoff_date  TEXT,                           -- 啟動會議日期
     warranty_years INTEGER,                       -- 保固年數 (NULL=無/未填)
+    notify_days_before INTEGER,                   -- 里程碑到期前 N 天提醒 (NULL=不提醒)
     team_id       INTEGER REFERENCES teams(id),   -- 團隊歸屬 (NULL=未指定)
     contract_scan INTEGER NOT NULL DEFAULT 0,     -- 已收到合約掃檔
     nda_date      TEXT,                           -- 保密文件簽署日期
@@ -70,6 +72,29 @@ CREATE TABLE IF NOT EXISTS field_perms (
     level  TEXT NOT NULL CHECK (level IN ('invisible', 'readonly', 'writable')),
     PRIMARY KEY (role, field)
 );
+
+-- 團隊通知收件矩陣 (每團隊 × 通知類型 × 角色 → 是否發送)
+CREATE TABLE IF NOT EXISTS team_notify_matrix (
+    team_id  INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    ntype    TEXT NOT NULL,              -- 通知類型,如 milestone_due
+    role     TEXT NOT NULL,              -- pm/dept_head/sales/dev
+    enabled  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (team_id, ntype, role)
+);
+
+-- 已發送通知記錄 (去重 + 歷史)
+CREATE TABLE IF NOT EXISTS notifications (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ntype        TEXT NOT NULL,          -- 通知類型
+    dedup_key    TEXT NOT NULL UNIQUE,   -- 去重鍵 (同一事件只發一次)
+    project_id   INTEGER,
+    subject      TEXT NOT NULL,
+    recipients   TEXT NOT NULL,          -- 逗號分隔的收件 email
+    status       TEXT NOT NULL DEFAULT 'sent',  -- sent/dryrun/failed
+    detail       TEXT,                   -- 失敗原因或乾跑備註
+    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications (created_at DESC);
 
 -- 專案里程碑
 CREATE TABLE IF NOT EXISTS milestones (

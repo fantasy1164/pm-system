@@ -40,7 +40,7 @@ PROJECT_FIELDS = [
     "year", "status", "contract_no", "part_no", "so_number", "name",
     "start_date", "end_date", "participants", "awarded_amount",
     "kickoff_date", "warranty_years", "team_id", "contract_scan",
-    "nda_date", "nda_scan", "notes", "sort_order",
+    "nda_date", "nda_scan", "notify_days_before", "notes", "sort_order",
 ]
 
 # 欄位權限矩陣定義:矩陣欄位鍵 -> 實際資料欄位
@@ -54,7 +54,7 @@ FIELD_MAP = {
     "part_no":        ["part_no"],
     "so_number":      ["so_number"],
     "schedule":       ["start_date", "end_date", "duration_days",
-                       "kickoff_date", "milestones"],
+                       "kickoff_date", "milestones", "notify_days_before"],
     "participants":   ["participants"],
     "awarded_amount": ["awarded_amount"],
     "budgets":        ["budgets"],
@@ -167,6 +167,8 @@ MIGRATIONS = [
     ("projects", "contract_scan", "INTEGER NOT NULL DEFAULT 0"),
     ("projects", "nda_date", "TEXT"),
     ("projects", "nda_scan", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "notify_days_before", "INTEGER"),
+    ("users", "notify_email", "TEXT"),
 ]
 
 
@@ -241,6 +243,9 @@ def validate_project(data, partial=False):
         return None, "保固年數須為 0~50 的整數"
     if out.get("nda_date") and parse_iso(out["nda_date"]) is None:
         return None, "保密文件簽署日期格式須為 YYYY-MM-DD"
+    nd = out.get("notify_days_before")
+    if nd is not None and (not isinstance(nd, int) or nd < 0 or nd > 365):
+        return None, "提醒天數須為 0~365 的整數"
     for b in ("contract_scan", "nda_scan"):
         if b in out:
             out[b] = 1 if out[b] else 0
@@ -653,6 +658,201 @@ def auth_me():
     return jsonify(_me_payload(get_db(), g.user))
 
 
+# =============================================================
+# 通知系統 (可擴充框架;第一個類型:里程碑到期提醒)
+# =============================================================
+NOTIFY_TYPES = [
+    {"key": "milestone_due", "label": "里程碑到期提醒"},
+]
+NOTIFY_ROLES = ("pm", "dept_head", "sales", "dev")
+
+
+def is_team_pm(db, user, team_id):
+    """使用者是否為某團隊的專案經理 (管理者恆真)"""
+    if user is None:                       # 開發模式
+        return True
+    if user["role"] == "admin":
+        return True
+    return db.execute(
+        "SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?"
+        " AND role = 'pm'", (team_id, user["id"])).fetchone() is not None
+
+
+def load_notify_matrix(db, team_id):
+    """{ntype: {role: bool}};未設定的類型預設只發給 pm"""
+    m = {nt["key"]: {r: False for r in NOTIFY_ROLES} for nt in NOTIFY_TYPES}
+    seen = set()
+    for row in db.execute(
+            "SELECT ntype, role, enabled FROM team_notify_matrix"
+            " WHERE team_id = ?", (team_id,)):
+        if row["ntype"] in m and row["role"] in NOTIFY_ROLES:
+            m[row["ntype"]][row["role"]] = bool(row["enabled"])
+            seen.add(row["ntype"])
+    for nt in NOTIFY_TYPES:                 # 未設定過的類型 → 預設發給 pm
+        if nt["key"] not in seen:
+            m[nt["key"]]["pm"] = True
+    return m
+
+
+def resolve_recipients(db, team_id, ntype):
+    """依團隊矩陣勾選的角色,解析出收件 email 清單 (取 notify_email)"""
+    matrix = load_notify_matrix(db, team_id)
+    roles = [r for r, on in matrix.get(ntype, {}).items() if on]
+    if not roles:
+        return []
+    q = ",".join("?" * len(roles))
+    rows = db.execute(
+        f"SELECT DISTINCT u.notify_email FROM team_members tm"
+        f" JOIN users u ON u.id = tm.user_id"
+        f" WHERE tm.team_id = ? AND tm.role IN ({q})"
+        f" AND u.status = 'active' AND u.notify_email IS NOT NULL"
+        f" AND u.notify_email != ''", [team_id, *roles])
+    return [r["notify_email"] for r in rows]
+
+
+def scan_milestone_due(db, today):
+    """回傳待發通知 [{dedup_key, project_id, subject, body, team_id, recipients}]"""
+    out = []
+    rows = db.execute(
+        "SELECT p.id, p.name, p.team_id, p.notify_days_before, p.year"
+        " FROM projects p WHERE p.deleted = 0 AND p.team_id IS NOT NULL"
+        " AND p.notify_days_before IS NOT NULL").fetchall()
+    for p in rows:
+        for m in db.execute(
+                "SELECT date, name FROM milestones WHERE project_id = ?",
+                (p["id"],)):
+            due = parse_iso(m["date"])
+            if due is None:
+                continue
+            lead = (due - today).days
+            if lead != p["notify_days_before"]:
+                continue                    # 只在「剛好提前 N 天」那天發,發一次
+            recipients = resolve_recipients(db, p["team_id"], "milestone_due")
+            dedup = f"milestone_due:{p['id']}:{m['date']}:{m['name']}"
+            subject = f"[專案提醒] {p['name']} 里程碑「{m['name']}」將於 {lead} 天後到期"
+            body = (f"專案:{p['name']}\n"
+                    f"里程碑:{m['name']}\n"
+                    f"到期日:{m['date']} (民國 {roc_str(m['date'])})\n"
+                    f"距今:{lead} 天\n")
+            out.append({"dedup_key": dedup, "project_id": p["id"],
+                        "subject": subject, "body": body,
+                        "team_id": p["team_id"], "recipients": recipients})
+    return out
+
+
+def roc_str(iso):
+    y, m, d = iso.split("-")
+    return f"{int(y) - 1911}/{int(m)}/{int(d)}"
+
+
+SCANNERS = {"milestone_due": scan_milestone_due}
+
+
+# ------------------------------------------------------- 通知矩陣 (pm 可寫自己團隊)
+@app.get("/api/notify/types")
+@VIEW
+def notify_types():
+    return jsonify({"types": NOTIFY_TYPES, "roles": list(NOTIFY_ROLES)})
+
+
+@app.get("/api/notify/matrix/<int:team_id>")
+@VIEW
+def get_notify_matrix(team_id):
+    db = get_db()
+    if db.execute("SELECT 1 FROM teams WHERE id = ?", (team_id,)).fetchone() is None:
+        return jsonify({"error": "找不到團隊"}), 404
+    return jsonify({"team_id": team_id, "matrix": load_notify_matrix(db, team_id)})
+
+
+@app.put("/api/notify/matrix/<int:team_id>")
+@VIEW
+def put_notify_matrix(team_id):
+    db = get_db()
+    user = getattr(g, "user", None)
+    if not is_team_pm(db, user, team_id):
+        return jsonify({"error": "僅該團隊的專案經理或管理者可設定"}), 403
+    data = (request.get_json(silent=True) or {}).get("matrix") or {}
+    db.execute("DELETE FROM team_notify_matrix WHERE team_id = ?", (team_id,))
+    valid_types = {nt["key"] for nt in NOTIFY_TYPES}
+    for ntype, roles in data.items():
+        if ntype not in valid_types:
+            continue
+        for role, on in roles.items():
+            if role in NOTIFY_ROLES and on:
+                db.execute("INSERT INTO team_notify_matrix"
+                           " (team_id, ntype, role, enabled) VALUES (?,?,?,1)",
+                           (team_id, ntype, role))
+    write_audit(db, "update", "team_notify_matrix", team_id, {"matrix": data})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"team_id": team_id, "matrix": load_notify_matrix(db, team_id)})
+
+
+# ------------------------------------------------------- 通知歷史
+@app.get("/api/notify/history")
+@VIEW
+def notify_history():
+    rows = get_db().execute(
+        "SELECT id, ntype, project_id, subject, recipients, status, detail,"
+        " created_at FROM notifications ORDER BY id DESC LIMIT 200").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+# ------------------------------------------------------- 執行掃描 (外部排程呼叫)
+@app.post("/api/notify/run")
+def notify_run():
+    # 以獨立 token 保護 (供 GitHub Actions 等外部排程呼叫,不需登入)
+    token = os.environ.get("PM_NOTIFY_TOKEN", "")
+    given = request.headers.get("X-Notify-Token", "")
+    if not token or given != token:
+        return jsonify({"error": "unauthorized"}), 401
+    dry = os.environ.get("PM_NOTIFY_DRYRUN", "1") == "1"  # 預設乾跑,mailer 接上再關
+    db = get_db()
+    today = datetime.now().date()
+    result = {"scanned": 0, "sent": 0, "skipped": 0, "failed": 0, "dryrun": dry}
+    for ntype, scanner in SCANNERS.items():
+        for item in scanner(db, today):
+            result["scanned"] += 1
+            # 去重:dedup_key 已存在就跳過
+            if db.execute("SELECT 1 FROM notifications WHERE dedup_key = ?",
+                          (item["dedup_key"],)).fetchone():
+                result["skipped"] += 1
+                continue
+            recipients = item["recipients"]
+            if not recipients:
+                # 沒有收件人 (矩陣沒勾或無 notify_email):記錄但標記,避免每天重掃
+                _record(db, ntype, item, "skipped", "無收件人")
+                result["skipped"] += 1
+                continue
+            if dry:
+                _record(db, ntype, item, "dryrun", "乾跑模式 (mailer 尚未啟用)")
+                result["sent"] += 1
+                continue
+            try:
+                send_email(recipients, item["subject"], item["body"])
+                _record(db, ntype, item, "sent", None)
+                result["sent"] += 1
+            except Exception as e:
+                _record(db, ntype, item, "failed", str(e)[:300])
+                result["failed"] += 1
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify(result)
+
+
+def _record(db, ntype, item, status, detail):
+    db.execute(
+        "INSERT OR IGNORE INTO notifications (ntype, dedup_key, project_id,"
+        " subject, recipients, status, detail) VALUES (?,?,?,?,?,?,?)",
+        (ntype, item["dedup_key"], item["project_id"], item["subject"],
+         ",".join(item["recipients"]), status, detail))
+
+
+def send_email(recipients, subject, body):
+    """寄件端佔位:mailer 接上前呼叫會拋錯 (run endpoint 預設乾跑不會走到這)"""
+    raise NotImplementedError("mailer 尚未啟用")
+
+
 # ------------------------------------------------------- teams (B.a)
 @app.get("/api/teams")
 @VIEW
@@ -738,7 +938,7 @@ def user_teams(db, uid):
 
 
 # ------------------------------------------------------- users (admin)
-USER_EDITABLE = ("role", "status", "can_edit")
+USER_EDITABLE = ("role", "status", "can_edit", "notify_email")
 
 
 @app.get("/api/users")
@@ -746,7 +946,7 @@ USER_EDITABLE = ("role", "status", "can_edit")
 def list_users():
     db = get_db()
     rows = db.execute(
-        "SELECT id, email, name, role, status, can_edit, created_at"
+        "SELECT id, email, name, role, status, can_edit, notify_email, created_at"
         " FROM users ORDER BY status = 'pending' DESC, id").fetchall()
     return jsonify([{**dict(r), "teams": user_teams(db, r["id"])} for r in rows])
 
@@ -763,6 +963,11 @@ def update_user(uid):
         return jsonify({"error": "不可修改自己的權限 (避免誤鎖)"}), 400
     data = request.get_json(silent=True) or {}
     fields = {k: data[k] for k in USER_EDITABLE if k in data}
+    if "notify_email" in fields:
+        ne = (fields["notify_email"] or "").strip()
+        if ne and ("@" not in ne or len(ne) > 200):
+            return jsonify({"error": "通知信箱格式不正確"}), 400
+        fields["notify_email"] = ne or None
     if "role" in fields and fields["role"] not in ("admin", "dev"):
         return jsonify({"error": "角色僅接受 admin(管理者)/dev(一般成員)"}), 400
     if "status" in fields and fields["status"] not in (
@@ -792,7 +997,7 @@ def update_user(uid):
         write_audit(db, "update", "users", uid, changes)
     db.commit()
     BACKUP.mark_dirty()
-    row = db.execute("SELECT id, email, name, role, status, can_edit"
+    row = db.execute("SELECT id, email, name, role, status, can_edit, notify_email"
                      " FROM users WHERE id = ?", (uid,)).fetchone()
     return jsonify({**dict(row), "teams": user_teams(db, uid)})
 
