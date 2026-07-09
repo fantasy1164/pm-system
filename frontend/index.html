@@ -694,8 +694,40 @@ async function renderNotify() {
   const manage = teams.filter(t => myPMteams.includes(t.id));
 
   const wrap = el("div", { style: "padding:12px" });
-  wrap.append(el("div", { style: "font-weight:600;color:var(--navy);margin-bottom:4px" },
-    "通知收件設定"),
+  const headBar = el("div", { style: "display:flex;flex-wrap:wrap;gap:12px;"
+    + "align-items:center;justify-content:space-between;margin-bottom:4px" });
+  headBar.append(el("div", { style: "font-weight:600;color:var(--navy)" },
+    "通知收件設定"));
+  // 掃描頻率 + 立即掃描 (僅管理者)
+  if (isAdmin()) {
+    try {
+      const st = await api("/notify/settings");
+      const freqSel = el("select", { style: "border:1px solid var(--line);"
+        + "border-radius:6px;padding:4px 8px;background:var(--panel);color:var(--ink)" },
+        ...st.options.map(o => el("option", { value: String(o.value) }, o.label)));
+      freqSel.value = String(st.interval);
+      freqSel.addEventListener("change", async () => {
+        try { await api("/notify/settings", { method: "PUT",
+            body: JSON.stringify({ interval: Number(freqSel.value) }) });
+          toast("已更新掃描頻率,即時生效"); }
+        catch (e) { toast(e.message, true); freqSel.value = String(st.interval); }
+      });
+      const scanBtn = el("button", { class: "btn primary",
+        style: "font-size:12.5px;padding:4px 12px", onclick: async () => {
+          scanBtn.disabled = true; scanBtn.textContent = "掃描中…";
+          try {
+            const r = await api("/notify/run", { method: "POST" });
+            toast(`掃描完成:發送 ${r.sent||0}、略過 ${r.skipped||0}、失敗 ${r.failed||0}`);
+            renderNotify();
+          } catch (e) { toast(e.message, true);
+            scanBtn.disabled = false; scanBtn.textContent = "立即掃描發信"; }
+        }}, "立即掃描發信");
+      headBar.append(el("div", { style: "display:flex;gap:8px;align-items:center" },
+        el("span", { style: "color:var(--ink2);font-size:12.5px" }, "自動掃描頻率"),
+        freqSel, scanBtn));
+    } catch (e) { /* 非致命,略過頻率控制 */ }
+  }
+  wrap.append(headBar,
     el("div", { style: "color:var(--ink2);font-size:12.5px;margin-bottom:12px" },
       "設定各團隊的通知要發給哪些角色(收件人取該角色成員的通知信箱)。"
       + "「里程碑到期前幾天提醒」的天數在各專案的編輯視窗設定。"));

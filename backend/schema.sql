@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS field_perms (
     PRIMARY KEY (role, field)
 );
 
+-- 系統層級設定 (key-value;如通知掃描頻率)
+CREATE TABLE IF NOT EXISTS app_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
+);
+
 -- 團隊通知收件矩陣 (每團隊 × 通知類型 × 角色 → 是否發送)
 CREATE TABLE IF NOT EXISTS team_notify_matrix (
     team_id  INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,

@@ -666,6 +666,28 @@ NOTIFY_TYPES = [
 ]
 NOTIFY_ROLES = ("pm", "dept_head", "sales", "dev")
 
+# 掃描頻率選項 (分鐘);外部排程每 10 分鐘敲門,此值決定節流間隔
+SCAN_INTERVALS = [
+    {"value": 10, "label": "10 分鐘"},
+    {"value": 30, "label": "30 分鐘"},
+    {"value": 60, "label": "1 小時"},
+    {"value": 360, "label": "6 小時"},
+    {"value": 1440, "label": "1 天"},
+]
+DEFAULT_SCAN_INTERVAL = 1440   # 預設 1 天
+
+
+def get_setting(db, key, default=None):
+    row = db.execute("SELECT value FROM app_settings WHERE key = ?",
+                     (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(db, key, value):
+    db.execute("INSERT INTO app_settings (key, value) VALUES (?, ?)"
+               " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+               (key, str(value)))
+
 
 def is_team_pm(db, user, team_id):
     """使用者是否為某團隊的專案經理 (管理者恆真)"""
@@ -827,17 +849,65 @@ def clear_notify():
     return jsonify({"cleared": n})
 
 
+# ------------------------------------------------------- 掃描頻率設定
+@app.get("/api/notify/settings")
+@VIEW
+def get_notify_settings():
+    db = get_db()
+    interval = int(get_setting(db, "scan_interval", DEFAULT_SCAN_INTERVAL))
+    last = get_setting(db, "last_scan_at", None)
+    return jsonify({"interval": interval, "options": SCAN_INTERVALS,
+                    "last_scan_at": last})
+
+
+@app.put("/api/notify/settings")
+@ADMIN
+def put_notify_settings():
+    data = request.get_json(silent=True) or {}
+    iv = data.get("interval")
+    valid = {o["value"] for o in SCAN_INTERVALS}
+    if iv not in valid:
+        return jsonify({"error": "無效的掃描頻率"}), 400
+    db = get_db()
+    set_setting(db, "scan_interval", iv)
+    write_audit(db, "update", "app_settings", 0, {"scan_interval": iv})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"interval": iv})
+
+
 # ------------------------------------------------------- 執行掃描 (外部排程呼叫)
 @app.post("/api/notify/run")
 def notify_run():
     # 以獨立 token 保護 (供 GitHub Actions 等外部排程呼叫,不需登入)
+    # 授權:外部排程用 X-Notify-Token;或登入的管理者 (供「立即掃描」按鈕)
+    # 帶了 Bearer token 就先嘗試載入使用者 (失敗不擋,還有 token 那條路)
+    if request.headers.get("Authorization", "").startswith("Bearer "):
+        auth_core.load_current_user(get_db)
     token = os.environ.get("PM_NOTIFY_TOKEN", "")
     given = request.headers.get("X-Notify-Token", "")
-    if not token or given != token:
+    is_admin_user = getattr(g, "user", None) and g.user["role"] == "admin"
+    if not is_admin_user and (not token or given != token):
         return jsonify({"error": "unauthorized"}), 401
-    dry = os.environ.get("PM_NOTIFY_DRYRUN", "1") == "1"  # 預設乾跑,mailer 接上再關
     db = get_db()
-    today = datetime.now().date()
+    # force=1 (立即掃描) 無視節流;否則依系統設定的頻率節流
+    force = request.args.get("force") == "1" or is_admin_user
+    now = datetime.now()
+    if not force:
+        interval = int(get_setting(db, "scan_interval", DEFAULT_SCAN_INTERVAL))
+        last = get_setting(db, "last_scan_at", None)
+        if last:
+            try:
+                elapsed = (now - datetime.fromisoformat(last)).total_seconds()
+                if elapsed < interval * 60 - 30:   # 容 30 秒抖動
+                    return jsonify({"skipped_throttle": True,
+                                    "next_in_sec": int(interval * 60 - elapsed)})
+            except ValueError:
+                pass
+    set_setting(db, "last_scan_at", now.isoformat(timespec="seconds"))
+    db.commit()
+    dry = os.environ.get("PM_NOTIFY_DRYRUN", "1") == "1"  # 預設乾跑,mailer 接上再關
+    today = now.date()
     result = {"scanned": 0, "sent": 0, "skipped": 0, "failed": 0, "dryrun": dry}
     for ntype, scanner in SCANNERS.items():
         for item in scanner(db, today):
