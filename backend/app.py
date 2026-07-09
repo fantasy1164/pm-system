@@ -93,6 +93,17 @@ def effective_roles(db):
     return roles or {"dev"}
 
 
+def visible_team_ids(db):
+    """請求者可檢視的團隊 id 集合 (Bug2:團隊即資料牆)。
+    回傳 None = 不受限 (管理者/開發模式);
+    回傳 set = 僅這些團隊的專案可見 (無團隊者得空 set,看不到任何專案)。"""
+    u = getattr(g, "user", None)
+    if u is None or u["role"] == "admin":
+        return None
+    return {r["team_id"] for r in db.execute(
+        "SELECT team_id FROM team_members WHERE user_id = ?", (u["id"],))}
+
+
 def effective_levels(db):
     """{矩陣鍵: level},多重角色取最寬鬆;None = 不受限"""
     roles = effective_roles(db)
@@ -369,6 +380,14 @@ def list_projects():
     args = []
     if hide_not_awarded(db):
         sql += " AND status != 'not_awarded'"
+    # Bug2:團隊即資料牆 — 非管理者只能看自己所屬團隊的專案
+    vis = visible_team_ids(db)
+    if vis is not None:
+        if not vis:
+            return jsonify([])          # 無團隊 → 看不到任何專案
+        ph = ",".join("?" * len(vis))
+        sql += f" AND team_id IN ({ph})"
+        args.extend(vis)
     if year:
         sql += " AND year = ?"
         args.append(year)
@@ -402,6 +421,10 @@ def get_project(pid):
     if p is None:
         return jsonify({"error": "找不到專案"}), 404
     if hide_not_awarded(db) and p.get("status") == "not_awarded":
+        return jsonify({"error": "找不到專案"}), 404
+    # Bug2:團隊即資料牆 — 非所屬團隊的專案視同不存在
+    vis = visible_team_ids(db)
+    if vis is not None and p.get("team_id") not in vis:
         return jsonify({"error": "找不到專案"}), 404
     return jsonify(strip_invisible(p, db))
 

@@ -316,15 +316,16 @@ function teamName(id) {
   const x = S.teams.find(t => t.id === id);
   return x ? x.name : "未指定";
 }
-function teamOptions() {   // 可切換的團隊清單 (null=全團隊)
+function teamOptions() {   // 可切換的團隊清單 (null=全團隊;"none"=未加入團隊)
   if (!S.auth.enabled || isAdmin())
     return [null, ...S.teams.map(t => t.id)];
   const mine = ((S.me && S.me.teams) || []).map(m => m.team_id);
-  if (mine.length === 1) return [mine[0]];      // C:單一團隊直接鎖定顯示,不循環
-  if (mine.length === 0) return [null];         // 無團隊:顯示全團隊 (檢視全部)
+  if (mine.length === 0) return ["none"];        // 未加入團隊:看不到任何專案 (Bug2)
+  if (mine.length === 1) return [mine[0]];       // 單一團隊直接鎖定顯示,不循環
   return [null, ...mine];                        // 多團隊:全團隊 + 各團隊循環
 }
 function viewProjects() {  // 依當前團隊過濾
+  if (S.team === "none") return [];              // 未加入團隊 → 無專案
   return S.team == null ? S.projects
        : S.projects.filter(p => p.team_id === S.team);
 }
@@ -333,9 +334,11 @@ function renderTeamChip() {
   const opts = teamOptions();
   if (!opts.includes(S.team)) S.team = opts[0];
   c.style.display = "";
-  c.textContent = S.team == null ? "全團隊" : teamName(S.team);
+  c.textContent = S.team === "none" ? "未加入團隊"
+                : S.team == null ? "全團隊" : teamName(S.team);
   const switchable = opts.length > 1;
-  c.title = switchable ? "點擊切換團隊" : "你所屬的團隊";
+  c.title = S.team === "none" ? "你尚未被指派任何團隊,請洽管理者"
+          : switchable ? "點擊切換團隊" : "你所屬的團隊";
   c.style.cursor = switchable ? "pointer" : "default";
   c.onclick = switchable ? () => {
     const i = opts.indexOf(S.team);
@@ -591,8 +594,10 @@ function renderTable() {
   const list = viewProjects();
   if (!list.length) {
     $("#content").innerHTML =
-      `<div class="state-msg">${S.team != null ? "此團隊在本年度尚無專案" :
-        "此年度尚無專案,點右上「＋ 新增專案」開始建立"}</div>`;
+      `<div class="state-msg">${
+        S.team === "none" ? "你尚未被指派任何團隊,無法檢視專案資料,請洽管理者。"
+        : S.team != null ? "此團隊在本年度尚無專案"
+        : "此年度尚無專案,點右上「＋ 新增專案」開始建立"}</div>`;
     return;
   }
   // 欄位定義 (f = 權限矩陣鍵;canSee 為 invisible 者整欄隱藏)
@@ -1359,24 +1364,34 @@ function openModal(p) {
         "此專案對你而言所有欄位皆唯讀"));
     } else {
       // 規則3:有可編輯欄位但未異動 → 凍結;規則4:有異動 → 啟用
-      const snapshot = () => [...writables].map(x =>
-        x.type === "checkbox" ? (x.checked ? "1" : "0") : x.value).join("|~|");
-      const initial = snapshot();
+      // 用整個表單的事件委派偵測變更,涵蓋里程碑/預算等「動態新增」的子欄位
+      // (舊版只綁初始 writables,漏掉 addMsRow 後才出現的里程碑欄位 → 改里程碑
+      //  時間按鈕不解凍,即 Bug1 的成因)
+      const fieldSig = () => {
+        const parts = [];
+        frm.querySelectorAll("input,select,textarea").forEach(x => {
+          if (x.disabled) return;
+          parts.push(x.type === "checkbox" ? (x.checked ? "1" : "0") : x.value);
+        });
+        return parts.join("|~|");
+      };
+      let initial = fieldSig();
       const refreshDirty = () => {
-        const dirty = snapshot() !== initial;
+        const dirty = fieldSig() !== initial;
         saveBtn.disabled = !dirty;
         saveBtn.title = dirty ? "" : "尚未有任何變更";
       };
-      writables.forEach(x => {
-        x.addEventListener("input", refreshDirty);
-        x.addEventListener("change", refreshDirty);
-      });
-      // 預算/里程碑的增減 (新增/移除列) 也算異動
+      // 事件委派:表單內任何 input/change 都重新判斷 (含未來動態新增的列)
+      frm.addEventListener("input", refreshDirty);
+      frm.addEventListener("change", refreshDirty);
+      // 里程碑/預算「加一列、刪一列」也算異動;新增列後基準需納入新欄位,
+      // 故延遲重算 (等 DOM 更新) 並以「與開啟時相比是否有變」為準
       for (const box of [budBox, msBox]) {
-        const parentLabel = box.parentElement;
-        if (parentLabel) parentLabel.addEventListener("click", () =>
-          setTimeout(refreshDirty, 0));
+        box.addEventListener("click", () => setTimeout(refreshDirty, 0));
       }
+      const addBtns = frm.querySelectorAll("button[type=button]");
+      addBtns.forEach(b => b.addEventListener("click",
+        () => setTimeout(refreshDirty, 0)));
       refreshDirty();   // 初始:凍結
     }
   }
