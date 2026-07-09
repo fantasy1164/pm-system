@@ -849,8 +849,9 @@ def _record(db, ntype, item, status, detail):
 
 
 def send_email(recipients, subject, body):
-    """寄件端佔位:mailer 接上前呼叫會拋錯 (run endpoint 預設乾跑不會走到這)"""
-    raise NotImplementedError("mailer 尚未啟用")
+    """透過 Gmail API 寄送 (mailer 使用含 gmail.send scope 的憑證)"""
+    from mailer import get_mailer
+    return get_mailer().send(recipients, subject, body)
 
 
 # ------------------------------------------------------- teams (B.a)

@@ -5,14 +5,16 @@
   1. 建立專案 → 啟用「Google Drive API」
   2. 「OAuth 同意畫面」→ External → 填 App 名稱 → 發布狀態切成「正式版」
      (維持「測試中」的話 refresh token 七天就會過期!)
+  2b.【本次重新授權必做】先到 https://myaccount.google.com/permissions
+      移除本 App 的舊授權,否則 Google 不會回傳新的 refresh_token。
   3. 「憑證」→ 建立 OAuth 用戶端 ID → 應用程式類型選「電腦版應用程式」
   4. 記下 client_id 與 client_secret
 
 用法:
   python get_refresh_token.py <client_id> <client_secret>
 
-流程:自動開瀏覽器 → 用你的 Google 帳號授權 (scope 僅 drive.file,
-只能存取本 App 自己建立的檔案) → 本機接回授權碼 → 換取並印出 refresh token。
+流程:自動開瀏覽器 → 用你的 Google 帳號授權 (scope 含 drive.file 存取
+本 App 自建檔案、gmail.send 代寄通知信) → 本機接回授權碼 → 印出 refresh token。
 把印出的三個值設到 Render 環境變數即可。
 """
 import http.server
@@ -26,7 +28,8 @@ import webbrowser
 
 PORT = 8765
 REDIRECT = f"http://localhost:{PORT}"
-SCOPE = "https://www.googleapis.com/auth/drive.file"
+SCOPE = ("https://www.googleapis.com/auth/drive.file"
+         " https://www.googleapis.com/auth/gmail.send")
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
