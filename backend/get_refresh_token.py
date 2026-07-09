@@ -98,7 +98,7 @@ def main():
 
     # 以剛取得的 access token 建立備份資料夾
     # (drive.file scope 下,App 自建的資料夾才保證可見可寫)
-    meta = json.dumps({"name": "pm-system-backups",
+    meta = json.dumps({"name": "pm-system-db-backups",
                        "mimeType": "application/vnd.google-apps.folder"}).encode()
     req = urllib.request.Request(
         "https://www.googleapis.com/drive/v3/files",
@@ -117,7 +117,7 @@ def main():
         print("(重跑會再走一次瀏覽器授權並產生新的 refresh token,用最新的那組)。")
         sys.exit(1)
 
-    print("成功!已在你的 Drive 建立「pm-system-backups」資料夾。")
+    print("成功!已在你的 Drive 建立「pm-system-db-backups」資料夾。")
     print("第四個環境變數:\n")
     print(f"  PM_DRIVE_FOLDER_ID={folder['id']}")
 

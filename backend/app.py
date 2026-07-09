@@ -798,6 +798,35 @@ def notify_history():
     return jsonify([dict(r) for r in rows])
 
 
+@app.delete("/api/notify/history/<int:nid>")
+@ADMIN
+def delete_notify(nid):
+    db = get_db()
+    row = db.execute("SELECT dedup_key FROM notifications WHERE id = ?",
+                     (nid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "找不到紀錄"}), 404
+    db.execute("DELETE FROM notifications WHERE id = ?", (nid,))
+    write_audit(db, "delete", "notifications", nid,
+                {"dedup_key": row["dedup_key"]})
+    db.commit()
+    BACKUP.mark_dirty()
+    # 刪除後該 dedup_key 解除,下次掃描符合條件會重新發送
+    return jsonify({"deleted": nid})
+
+
+@app.delete("/api/notify/history")
+@ADMIN
+def clear_notify():
+    db = get_db()
+    n = db.execute("SELECT COUNT(*) c FROM notifications").fetchone()["c"]
+    db.execute("DELETE FROM notifications")
+    write_audit(db, "delete", "notifications", 0, {"cleared": n})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"cleared": n})
+
+
 # ------------------------------------------------------- 執行掃描 (外部排程呼叫)
 @app.post("/api/notify/run")
 def notify_run():
@@ -813,9 +842,11 @@ def notify_run():
     for ntype, scanner in SCANNERS.items():
         for item in scanner(db, today):
             result["scanned"] += 1
-            # 去重:dedup_key 已存在就跳過
-            if db.execute("SELECT 1 FROM notifications WHERE dedup_key = ?",
-                          (item["dedup_key"],)).fetchone():
+            # 去重:僅「成功發送」過才跳過;失敗/乾跑/略過可再次嘗試
+            done = db.execute(
+                "SELECT 1 FROM notifications WHERE dedup_key = ?"
+                " AND status = 'sent'", (item["dedup_key"],)).fetchone()
+            if done:
                 result["skipped"] += 1
                 continue
             recipients = item["recipients"]
@@ -841,11 +872,23 @@ def notify_run():
 
 
 def _record(db, ntype, item, status, detail):
-    db.execute(
-        "INSERT OR IGNORE INTO notifications (ntype, dedup_key, project_id,"
-        " subject, recipients, status, detail) VALUES (?,?,?,?,?,?,?)",
-        (ntype, item["dedup_key"], item["project_id"], item["subject"],
-         ",".join(item["recipients"]), status, detail))
+    # upsert:同一 dedup_key 若已有記錄 (如先前失敗/乾跑),更新其狀態與時間;
+    # 否則新增。確保「重試成功」能正確覆蓋為 sent,去重判斷才準確。
+    row = db.execute("SELECT id FROM notifications WHERE dedup_key = ?",
+                     (item["dedup_key"],)).fetchone()
+    if row:
+        db.execute(
+            "UPDATE notifications SET status = ?, detail = ?, recipients = ?,"
+            " subject = ?, created_at = datetime('now','localtime')"
+            " WHERE id = ?",
+            (status, detail, ",".join(item["recipients"]),
+             item["subject"], row["id"]))
+    else:
+        db.execute(
+            "INSERT INTO notifications (ntype, dedup_key, project_id,"
+            " subject, recipients, status, detail) VALUES (?,?,?,?,?,?,?)",
+            (ntype, item["dedup_key"], item["project_id"], item["subject"],
+             ",".join(item["recipients"]), status, detail))
 
 
 def send_email(recipients, subject, body):

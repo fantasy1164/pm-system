@@ -738,13 +738,25 @@ async function renderNotify() {
   }
 
   // 通知歷史
-  wrap.append(el("div", { style: "margin:18px 0 6px;font-weight:600;color:var(--navy)" },
-    "通知歷史(近 200 筆)"));
+  const histHead = el("div", { style: "margin:18px 0 6px;display:flex;"
+    + "align-items:center;gap:10px" },
+    el("span", { style: "font-weight:600;color:var(--navy)" }, "通知歷史(近 200 筆)"));
+  if (isAdmin() && history.length)
+    histHead.append(el("button", { class: "btn danger",
+      style: "font-size:12.5px;padding:3px 10px", onclick: async () => {
+        if (!confirm(`清空全部 ${history.length} 筆通知紀錄?\\n`
+          + "清空後,符合條件的里程碑於下次掃描會重新發送。")) return;
+        try { await api("/notify/history", { method: "DELETE" });
+          toast("已清空通知紀錄"); renderNotify(); }
+        catch (e) { toast(e.message, true); }
+      }}, "清空全部"));
+  wrap.append(histHead);
   if (!history.length) {
     wrap.append(el("div", { class: "state-msg" }, "尚無通知紀錄"));
   } else {
-    const hh = el("thead", {}, el("tr", {},
-      ...["時間","類型","主旨","收件人","狀態"].map(h => el("th", {}, h))));
+    const cols = ["時間","類型","主旨","收件人","狀態","詳情"];
+    if (isAdmin()) cols.push("");
+    const hh = el("thead", {}, el("tr", {}, ...cols.map(h => el("th", {}, h))));
     const STLBL = { sent: "已發送", dryrun: "乾跑", failed: "失敗", skipped: "略過" };
     const hb = el("tbody");
     for (const n of history) {
@@ -753,7 +765,23 @@ async function renderNotify() {
         el("td", {}, (types.types.find(t => t.key === n.ntype) || {}).label || n.ntype),
         el("td", { style: "text-align:left" }, n.subject),
         el("td", { style: "text-align:left;font-size:12px" }, n.recipients || "—"),
-        el("td", {}, STLBL[n.status] || n.status)));
+        (() => {
+          const td = el("td", {}, STLBL[n.status] || n.status);
+          if (n.status === "failed") td.style.color = "var(--red)";
+          else if (n.status === "sent") td.style.color = "var(--teal)";
+          return td;
+        })(),
+        el("td", { style: "text-align:left;font-size:12px;color:var(--ink2);"
+          + "max-width:280px;white-space:normal" }, n.detail || "—"),
+        ...(isAdmin() ? [el("td", {}, el("button", { class: "btn danger",
+          style: "font-size:12px;padding:2px 8px", title: "刪除此筆 (下次掃描會重送)",
+          onclick: async () => {
+            if (!confirm("刪除此筆通知紀錄?\\n刪除後,若里程碑仍符合條件,"
+              + "下次掃描會重新發送。")) return;
+            try { await api(`/notify/history/${n.id}`, { method: "DELETE" });
+              toast("已刪除"); renderNotify(); }
+            catch (e) { toast(e.message, true); }
+          }}, "刪除"))] : [])));
     }
     wrap.append(el("div", { class: "tbl-wrap" }, el("table", { style: "min-width:720px" }, hh, hb)));
   }
