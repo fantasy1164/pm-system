@@ -68,6 +68,22 @@ def decode_jwt(token):
     return pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
 
 
+def issue_register_token(email, name):
+    """签发短期注册凭证 (15 分钟);内含经 Google 验证过的 email/name。"""
+    now = int(time.time())
+    return pyjwt.encode({"reg": True, "email": email, "name": name,
+                         "iat": now, "exp": now + 15 * 60},
+                        JWT_SECRET, algorithm="HS256")
+
+
+def verify_register_token(token):
+    """验证注册凭证,回传 (email, name);无效/过期 raise pyjwt 例外。"""
+    payload = pyjwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    if not payload.get("reg"):
+        raise pyjwt.InvalidTokenError("非註冊憑證")
+    return payload["email"], payload.get("name", "")
+
+
 # ------------------------------------------------------------ 請求層
 def load_current_user(get_db):
     """驗 Bearer token 並載入使用者。成功回 None 並設定 g.user;失敗回 (resp, code)。"""

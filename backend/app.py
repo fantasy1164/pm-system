@@ -180,6 +180,7 @@ MIGRATIONS = [
     ("projects", "nda_scan", "INTEGER NOT NULL DEFAULT 0"),
     ("projects", "notify_days_before", "INTEGER"),
     ("users", "notify_email", "TEXT"),
+    ("users", "company_name", "TEXT"),
 ]
 
 
@@ -512,6 +513,33 @@ def update_project(pid):
         write_audit(db, "update", "projects", pid, changes)
     db.commit()
     BACKUP.mark_dirty()
+    # 触发点5:结案通知 — 专案 status 改为 closed 的当下即时发送
+    new_status = fields.get("status", old["status"])
+    if new_status == "closed" and old["status"] != "closed":
+        proj = db.execute("SELECT id, name, team_id FROM projects"
+                          " WHERE id = ?", (pid,)).fetchone()
+        if proj and proj["team_id"]:
+            recipients = resolve_recipients(db, proj["team_id"], "project_closed")
+            if recipients:
+                subject = f"[專案結案] {proj['name']} 已結案"
+                body = (f"專案「{proj['name']}」已結案。\n\n"
+                        f"結案時間:{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                        f"系統網址:{SYSTEM_URL}\n")
+                # 结案通知走即时寄送 (比照系统通知,但收件人来自专案矩阵)
+                dry = os.environ.get("PM_NOTIFY_DRYRUN", "1") == "1"
+                stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+                item = {"dedup_key": f"project_closed:{pid}:{stamp}",
+                        "project_id": pid, "subject": subject,
+                        "recipients": recipients}
+                if dry:
+                    _record(db, "project_closed", item, "dryrun", "乾跑模式")
+                else:
+                    try:
+                        send_email(recipients, subject, body)
+                        _record(db, "project_closed", item, "sent", None)
+                    except Exception as e:
+                        _record(db, "project_closed", item, "failed", str(e)[:300])
+                db.commit()
     return jsonify(fetch_project(db, pid))
 
 
@@ -604,7 +632,8 @@ def _me_payload(db, user):
                        for r in roles)
             my_levels[fkey] = ["invisible", "readonly", "writable"][best]
     return {"user": {k: user[k] for k in
-                     ("id", "email", "name", "role", "status", "can_edit")},
+                     ("id", "email", "name", "role", "status", "can_edit",
+                      "notify_email", "company_name")},
             "teams": teams,
             "editable": editable,
             "my_levels": my_levels,
@@ -626,21 +655,27 @@ def auth_google():
                      (info["email"],)).fetchone()
     if row is None:
         is_admin = (info["email"] == auth_core.ADMIN_EMAIL)
-        cur = db.execute(
-            "INSERT INTO users (email, name, role, status, can_edit)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (info["email"], info["name"],
-             "admin" if is_admin else "dev",
-             "active" if is_admin else "pending",
-             1 if is_admin else 0))
-        write_audit(db, "create", "users", cur.lastrowid,
-                    {"email": info["email"],
-                     "reason": "首位管理者" if is_admin else "首次登入待核准"})
-        db.commit()
-        BACKUP.mark_dirty()
-        if not is_admin:
-            return jsonify({"code": "pending",
-                            "error": "帳號已建立,請等待管理者核准"}), 403
+        if is_admin:
+            # 首位管理者:直接建号启用,不需补充资料
+            cur = db.execute(
+                "INSERT INTO users (email, name, role, status, can_edit)"
+                " VALUES (?, ?, 'admin', 'active', 1)",
+                (info["email"], info["name"]))
+            write_audit(db, "create", "users", cur.lastrowid,
+                        {"email": info["email"], "reason": "首位管理者"})
+            db.commit()
+            BACKUP.mark_dirty()
+            row = db.execute("SELECT * FROM users WHERE id = ?",
+                             (cur.lastrowid,)).fetchone()
+        else:
+            # 一般新使用者:先不建号,要求补充公司信箱+姓名 (需求2)
+            # 回传经签章的注册凭证,前端填完资料再送 /auth/register
+            reg_token = auth_core.issue_register_token(
+                info["email"], info["name"])
+            return jsonify({"code": "register",
+                            "register_token": reg_token,
+                            "email": info["email"],
+                            "google_name": info["name"]}), 200
         row = db.execute("SELECT * FROM users WHERE id = ?",
                          (cur.lastrowid,)).fetchone()
     # PM_ADMIN_EMAIL 為持續有效的權威設定:符合者確保為 active admin
@@ -673,6 +708,57 @@ def auth_google():
                     **_me_payload(db, user)})
 
 
+@app.post("/api/auth/register")
+def auth_register():
+    """完成注册:验证注册凭证 + 补充的公司信箱/姓名,建立 pending 帐号,
+    并即时发出「注册申请提醒」给申请人与管理者。"""
+    if not auth_core.AUTH_ENABLED:
+        return jsonify({"error": "登入功能未啟用"}), 400
+    data = request.get_json(silent=True) or {}
+    reg_token = data.get("register_token", "")
+    try:
+        email, gname = auth_core.verify_register_token(reg_token)
+    except Exception:
+        return jsonify({"error": "註冊憑證無效或已過期,請重新登入"}), 401
+    company_email = (data.get("notify_email") or "").strip()
+    company_name = (data.get("company_name") or "").strip()
+    if not company_email or "@" not in company_email or len(company_email) > 200:
+        return jsonify({"error": "請填寫有效的公司信箱"}), 400
+    if not company_name or len(company_name) > 100:
+        return jsonify({"error": "請填寫姓名"}), 400
+    db = get_db()
+    # 防重复:期间若已被建号 (例如重复送出),直接回 pending
+    exist = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    if exist:
+        return jsonify({"code": "pending",
+                        "error": "帳號已建立,請等待管理者核准"}), 403
+    cur = db.execute(
+        "INSERT INTO users (email, name, role, status, can_edit,"
+        " notify_email, company_name) VALUES (?, ?, 'dev', 'pending', 0, ?, ?)",
+        (email, gname, company_email, company_name))
+    uid = cur.lastrowid
+    write_audit(db, "create", "users", uid,
+                {"email": email, "reason": "註冊申請 (待核准)"})
+    db.commit()
+    BACKUP.mark_dirty()
+    # 触发点1:注册申请提醒 — 发给申请人本人 + 所有管理者
+    send_system_notify(db, "reg_pending", [company_email],
+        "[專案管理系統] 註冊申請已收到,待管理者核准",
+        f"{company_name} 您好,\n\n您的帳號註冊申請已成功送出,目前狀態為"
+        f"「待核准」,請等待管理者審核啟用。\n\n登入信箱:{email}\n"
+        f"公司信箱:{company_email}\n系統網址:{SYSTEM_URL}\n")
+    admins = all_admin_emails(db)
+    if admins:
+        send_system_notify(db, "reg_pending", admins,
+            "[專案管理系統] 有新的帳號註冊申請待核准",
+            f"有使用者提出帳號註冊申請,請至權限設定頁審核:\n\n"
+            f"姓名:{company_name}\n登入信箱:{email}\n"
+            f"公司信箱:{company_email}\n\n權限設定頁:{SYSTEM_URL}\n")
+    db.commit()
+    return jsonify({"code": "pending",
+                    "error": "帳號已建立,請等待管理者核准"}), 403
+
+
 @app.get("/api/auth/me")
 @VIEW
 def auth_me():
@@ -684,10 +770,66 @@ def auth_me():
 # =============================================================
 # 通知系統 (可擴充框架;第一個類型:里程碑到期提醒)
 # =============================================================
+# 专案类通知:per-team 角色矩阵 + 事件/排程触发
 NOTIFY_TYPES = [
     {"key": "milestone_due", "label": "里程碑到期提醒"},
+    {"key": "project_closed", "label": "專案結案通知"},
 ]
 NOTIFY_ROLES = ("pm", "dept_head", "sales", "dev")
+
+# 系统类通知:不分角色、即时触发、发给事件当事人 (+管理者)。
+# enabled 存 app_settings (key = sysnotify:<key>);预设启用。
+SYSTEM_NOTIFY_TYPES = [
+    {"key": "reg_pending",      "label": "註冊申請提醒",
+     "desc": "使用者完成註冊申請、待管理者核准時,通知申請人與管理者"},
+    {"key": "reg_approved",     "label": "註冊成功提醒",
+     "desc": "帳號經核准啟用時,通知當事人 (含系統網址)"},
+    {"key": "account_disabled", "label": "帳號停用提醒",
+     "desc": "帳號被停用時,通知當事人"},
+    {"key": "perm_assigned",    "label": "權限設定成功提醒",
+     "desc": "被加入團隊/設定角色時,通知當事人 (含團隊與角色)"},
+]
+SYSTEM_URL = "https://fantasy1164.github.io/pm-system/"
+
+
+def sys_notify_enabled(db, key):
+    """系统通知是否启用 (预设启用)"""
+    return get_setting(db, f"sysnotify:{key}", "1") == "1"
+
+
+def all_admin_emails(db):
+    """所有 active 管理者的公司信箱 (无则退回登入 email)"""
+    out = []
+    for r in db.execute(
+            "SELECT notify_email, email FROM users"
+            " WHERE role = 'admin' AND status = 'active'"):
+        e = (r["notify_email"] or "").strip() or (r["email"] or "").strip()
+        if e:
+            out.append(e)
+    return out
+
+
+def send_system_notify(db, key, recipients, subject, body):
+    """即时寄送系统通知 (未启用则跳过);记录进 notifications 表。
+    dedup_key 带时间戳,每次事件独立记录 (系统通知不做跨次去重)。"""
+    if not sys_notify_enabled(db, key):
+        return
+    recipients = [r for r in dict.fromkeys(  # 去重且保序
+        (e or "").strip() for e in recipients) if r]
+    if not recipients:
+        return
+    dry = os.environ.get("PM_NOTIFY_DRYRUN", "1") == "1"
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    item = {"dedup_key": f"{key}:{stamp}", "project_id": None,
+            "subject": subject, "recipients": recipients}
+    if dry:
+        _record(db, key, item, "dryrun", "乾跑模式")
+        return
+    try:
+        send_email(recipients, subject, body)
+        _record(db, key, item, "sent", None)
+    except Exception as e:
+        _record(db, key, item, "failed", str(e)[:300])
 
 # 掃描頻率選項 (分鐘);外部排程每 10 分鐘敲門,此值決定節流間隔
 SCAN_INTERVALS = [
@@ -798,6 +940,35 @@ SCANNERS = {"milestone_due": scan_milestone_due}
 @VIEW
 def notify_types():
     return jsonify({"types": NOTIFY_TYPES, "roles": list(NOTIFY_ROLES)})
+
+
+@app.get("/api/notify/system")
+@VIEW
+def get_system_notify():
+    """系统通知类型 + 各自启用状态"""
+    db = get_db()
+    return jsonify({"types": [
+        {**t, "enabled": sys_notify_enabled(db, t["key"])}
+        for t in SYSTEM_NOTIFY_TYPES]})
+
+
+@app.put("/api/notify/system")
+@ADMIN
+def put_system_notify():
+    """管理者设定某系统通知的启用/停用"""
+    data = request.get_json(silent=True) or {}
+    key = data.get("key")
+    valid = {t["key"] for t in SYSTEM_NOTIFY_TYPES}
+    if key not in valid:
+        return jsonify({"error": "無效的通知類型"}), 400
+    enabled = "1" if data.get("enabled") else "0"
+    db = get_db()
+    set_setting(db, f"sysnotify:{key}", enabled)
+    write_audit(db, "update", "app_settings", 0,
+                {f"sysnotify:{key}": enabled})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"key": key, "enabled": enabled == "1"})
 
 
 @app.get("/api/notify/matrix/<int:team_id>")
@@ -1075,7 +1246,9 @@ def user_teams(db, uid):
 
 
 # ------------------------------------------------------- users (admin)
-USER_EDITABLE = ("role", "status", "can_edit", "notify_email")
+USER_EDITABLE = ("role", "status", "can_edit", "notify_email", "company_name")
+# 联络资讯类栏位:改自己的也允许 (其余 role/status/teams 改自己会被挡)
+SELF_EDITABLE = ("notify_email", "company_name")
 
 
 @app.get("/api/users")
@@ -1083,7 +1256,7 @@ USER_EDITABLE = ("role", "status", "can_edit", "notify_email")
 def list_users():
     db = get_db()
     rows = db.execute(
-        "SELECT id, email, name, role, status, can_edit, notify_email, created_at"
+        "SELECT id, email, name, role, status, can_edit, notify_email, company_name, created_at"
         " FROM users ORDER BY status = 'pending' DESC, id").fetchall()
     return jsonify([{**dict(r), "teams": user_teams(db, r["id"])} for r in rows])
 
@@ -1096,15 +1269,26 @@ def update_user(uid):
     if old is None:
         return jsonify({"error": "找不到使用者"}), 404
     me = getattr(g, "user", None)
-    if me and me["id"] == uid:
-        return jsonify({"error": "不可修改自己的權限 (避免誤鎖)"}), 400
+    is_self = me and me["id"] == uid
     data = request.get_json(silent=True) or {}
     fields = {k: data[k] for k in USER_EDITABLE if k in data}
+    # 改自己时:只允许联络资讯,敏感栏位 (role/status/teams) 一律忽略避免误锁
+    if is_self:
+        sensitive = [k for k in fields if k not in SELF_EDITABLE]
+        for k in sensitive:
+            fields.pop(k)
+        if "teams" in data:
+            return jsonify({"error": "不可修改自己的团队归属 (避免误锁)"}), 400
     if "notify_email" in fields:
         ne = (fields["notify_email"] or "").strip()
         if ne and ("@" not in ne or len(ne) > 200):
             return jsonify({"error": "通知信箱格式不正確"}), 400
         fields["notify_email"] = ne or None
+    if "company_name" in fields:
+        cn = (fields["company_name"] or "").strip()
+        if len(cn) > 100:
+            return jsonify({"error": "姓名過長"}), 400
+        fields["company_name"] = cn or None
     if "role" in fields and fields["role"] not in ("admin", "dev"):
         return jsonify({"error": "角色僅接受 admin(管理者)/dev(一般成員)"}), 400
     if "status" in fields and fields["status"] not in (
@@ -1134,8 +1318,45 @@ def update_user(uid):
         write_audit(db, "update", "users", uid, changes)
     db.commit()
     BACKUP.mark_dirty()
-    row = db.execute("SELECT id, email, name, role, status, can_edit, notify_email"
-                     " FROM users WHERE id = ?", (uid,)).fetchone()
+    row = db.execute("SELECT id, email, name, role, status, can_edit, notify_email,"
+                     " company_name FROM users WHERE id = ?", (uid,)).fetchone()
+    # ── 系统通知即时触发 (对他人操作时) ──────────────────────
+    if not is_self:
+        target_mail = (row["notify_email"] or "").strip() or row["email"]
+        target_name = row["company_name"] or row["name"] or ""
+        old_status = old["status"]
+        new_status = row["status"]
+        # 触发点2:注册成功 (status → active,且原本非 active)
+        if new_status == "active" and old_status != "active":
+            send_system_notify(db, "reg_approved", [target_mail],
+                "[專案管理系統] 您的帳號已核准啟用",
+                f"{target_name} 您好,\n\n您的帳號已通過管理者核准,現在可以登入使用。\n\n"
+                f"登入信箱:{row['email']}\n系統網址:{SYSTEM_URL}\n\n"
+                f"請使用您的 Google 帳號登入。\n")
+        # 触发点3:帐号停用 (status → disabled,且原本非 disabled)
+        if new_status == "disabled" and old_status != "disabled":
+            send_system_notify(db, "account_disabled", [target_mail],
+                "[專案管理系統] 您的帳號已被停用",
+                f"{target_name} 您好,\n\n您的帳號已被管理者停用,目前無法登入系統。\n"
+                f"如有疑問請洽系統管理者。\n\n登入信箱:{row['email']}\n")
+        # 触发点4:权限设定成功 (teams 有变更且最终为 active)
+        if "teams" in data and new_status == "active":
+            tms = user_teams(db, uid)
+            if tms:
+                ROLE_TXT = {"pm": "專案經理", "dept_head": "部門主管",
+                            "sales": "業務", "dev": "開發人員"}
+                lines = []
+                for m in tms:
+                    tn = db.execute("SELECT name FROM teams WHERE id = ?",
+                                    (m["team_id"],)).fetchone()
+                    lines.append(f"・{tn['name'] if tn else m['team_id']}"
+                                 f"({ROLE_TXT.get(m['role'], m['role'])})")
+                send_system_notify(db, "perm_assigned", [target_mail],
+                    "[專案管理系統] 您的團隊與權限已設定",
+                    f"{target_name} 您好,\n\n您已被加入以下團隊,權限如下:\n\n"
+                    + "\n".join(lines)
+                    + f"\n\n系統網址:{SYSTEM_URL}\n")
+        db.commit()
     return jsonify({**dict(row), "teams": user_teams(db, uid)})
 
 

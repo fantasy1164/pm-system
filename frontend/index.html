@@ -257,6 +257,52 @@ const el = (tag, attrs = {}, ...kids) => {
   return n;
 };
 const fmtAmt = (n) => (n == null || n === "" ? "—" : Number(n).toLocaleString("zh-TW"));
+// 二态是/否 toggle button;回传 {el, get, set, onchange, setDisabled}
+function makeToggle(on, labels = ["是", "否"], colors = ["var(--teal)", "var(--ink2)"]) {
+  let state = !!on, disabled = false, handler = null;
+  const btn = el("button", { type: "button", class: "toggle-btn",
+    style: "min-width:52px;padding:4px 12px;border-radius:14px;border:none;"
+      + "cursor:pointer;font-size:12.5px;font-weight:600;color:#fff;transition:all .15s" });
+  const paint = () => {
+    btn.textContent = state ? labels[0] : labels[1];
+    btn.style.background = state ? colors[0] : colors[1];
+    btn.style.opacity = disabled ? "0.45" : "1";
+    btn.style.cursor = disabled ? "not-allowed" : "pointer";
+  };
+  btn.addEventListener("click", () => {
+    if (disabled) return;
+    state = !state; paint(); if (handler) handler(state);
+  });
+  paint();
+  return { el: btn, get: () => state, set: (v) => { state = !!v; paint(); },
+    onchange: (fn) => { handler = fn; },
+    setDisabled: (v) => { disabled = !!v; paint(); } };
+}
+// 多态循环 toggle;options=[{value,label,color}]
+function makeCycleToggle(value, options) {
+  let idx = Math.max(0, options.findIndex(o => o.value === value));
+  let disabled = false, handler = null;
+  const btn = el("button", { type: "button", class: "toggle-btn",
+    style: "min-width:64px;padding:4px 12px;border-radius:14px;border:none;"
+      + "cursor:pointer;font-size:12.5px;font-weight:600;color:#fff;transition:all .15s" });
+  const paint = () => {
+    const o = options[idx];
+    btn.textContent = o.label;
+    btn.style.background = o.color;
+    btn.style.opacity = disabled ? "0.45" : "1";
+    btn.style.cursor = disabled ? "not-allowed" : "pointer";
+  };
+  btn.addEventListener("click", () => {
+    if (disabled) return;
+    idx = (idx + 1) % options.length; paint();
+    if (handler) handler(options[idx].value);
+  });
+  paint();
+  return { el: btn, get: () => options[idx].value,
+    set: (v) => { idx = Math.max(0, options.findIndex(o => o.value === v)); paint(); },
+    onchange: (fn) => { handler = fn; },
+    setDisabled: (v) => { disabled = !!v; paint(); } };
+}
 const fmtDur = (days) => {
   if (days == null) return "—";
   const m = days / 30.44;
@@ -425,7 +471,9 @@ async function onGoogleCred(resp) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ credential: resp.credential }) });
     const d = await r.json().catch(() => ({}));
-    if (r.ok) {
+    if (r.ok && d.code === "register") {
+      renderRegisterForm(d);   // 新使用者:补充公司信箱+姓名
+    } else if (r.ok) {
       setTok(d.token);
       S.me = { user: d.user, editable: d.editable };
       enterApp();
@@ -434,6 +482,56 @@ async function onGoogleCred(resp) {
         '<div class="state-msg">帳號已建立,請等待管理者核准後再登入。</div>';
     } else renderLogin(d.error || "登入失敗,請重試");
   } catch (_e) { renderLogin("無法連線後端,請稍後重試"); }
+}
+function renderRegisterForm(reg) {
+  $("#yearTabs").innerHTML = "";
+  const nameIn = el("input", { type: "text", value: reg.google_name || "",
+    placeholder: "您的姓名",
+    style: "width:100%;padding:8px 10px;border:1px solid var(--line);"
+      + "border-radius:6px;background:var(--panel);color:var(--ink);margin-top:4px" });
+  const mailIn = el("input", { type: "email", placeholder: "您的公司信箱 (接收通知用)",
+    style: "width:100%;padding:8px 10px;border:1px solid var(--line);"
+      + "border-radius:6px;background:var(--panel);color:var(--ink);margin-top:4px" });
+  const errBox = el("div", { style: "color:var(--red);font-size:13px;min-height:18px" });
+  const submit = el("button", { class: "btn primary", style: "width:100%;margin-top:6px",
+    onclick: async () => {
+      errBox.textContent = "";
+      const cn = nameIn.value.trim(), ne = mailIn.value.trim();
+      if (!cn) return errBox.textContent = "請填寫姓名";
+      if (!ne || !ne.includes("@")) return errBox.textContent = "請填寫有效的公司信箱";
+      submit.disabled = true; submit.textContent = "送出中…";
+      try {
+        const r = await fetch(API + "/auth/register", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ register_token: reg.register_token,
+            company_name: cn, notify_email: ne }) });
+        const d = await r.json().catch(() => ({}));
+        if (d.code === "pending") {
+          $("#content").innerHTML =
+            '<div class="state-msg"><div style="font-size:16px;color:var(--navy);'
+            + 'font-weight:600;margin-bottom:8px">註冊申請已送出</div>'
+            + '您的帳號已建立,請等待管理者核准後再登入。<br>'
+            + '<small style="color:var(--ink2)">核准通知將寄至您填寫的公司信箱。</small></div>';
+        } else {
+          errBox.textContent = d.error || "註冊失敗,請重試";
+          submit.disabled = false; submit.textContent = "送出註冊申請";
+        }
+      } catch (_e) {
+        errBox.textContent = "無法連線後端,請稍後重試";
+        submit.disabled = false; submit.textContent = "送出註冊申請";
+      }
+    }}, "送出註冊申請");
+  const box = el("div", { class: "state-msg", style: "max-width:360px;margin:0 auto;text-align:left" },
+    el("div", { style: "font-size:16px;color:var(--navy);font-weight:600;text-align:center" },
+      "完成註冊"),
+    el("div", { style: "margin:6px 0 16px;color:var(--ink2);text-align:center;font-size:13px" },
+      `Google 帳號:${reg.email}`),
+    el("label", { style: "font-size:13px;color:var(--ink2)" }, "姓名", nameIn),
+    el("div", { style: "height:12px" }),
+    el("label", { style: "font-size:13px;color:var(--ink2)" }, "公司信箱", mailIn),
+    el("div", { style: "height:12px" }),
+    errBox, submit);
+  $("#content").replaceChildren(box);
 }
 async function enterApp() {
   renderUserChip(); applyPerms(); resetIdle();
@@ -684,21 +782,69 @@ function renderTable() {
 }
 
 async function renderNotify() {
+  if (!S.notifyTab) S.notifyTab = isAdmin() ? "system" : "project";
+  if (!isAdmin()) S.notifyTab = "project";
+  const wrap = el("div", { style: "padding:12px" });
+  const tabBar = el("div", { style: "display:flex;gap:8px;margin-bottom:14px;"
+    + "border-bottom:1px solid var(--line)" });
+  const mkTab = (key, label) => {
+    const active = S.notifyTab === key;
+    return el("button", { type: "button", style: "padding:6px 16px;border:none;"
+      + "background:none;cursor:pointer;font-size:13.5px;font-weight:600;"
+      + `border-bottom:2px solid ${active ? "var(--navy)" : "transparent"};`
+      + `color:${active ? "var(--navy)" : "var(--ink2)"};margin-bottom:-1px`,
+      onclick: () => { S.notifyTab = key; renderNotify(); } }, label);
+  };
+  if (isAdmin()) tabBar.append(mkTab("system", "系統通用設定"));
+  tabBar.append(mkTab("project", "專案通知設定"));
+  wrap.append(tabBar);
+  const body = el("div");
+  wrap.append(body);
+  $("#content").replaceChildren(wrap);
+  if (S.notifyTab === "system") return renderNotifySystem(body);
+  return renderNotifyProject(body);
+}
+
+async function renderNotifySystem(body) {
+  let sys;
+  try { sys = await api("/notify/system"); }
+  catch (e) { body.innerHTML = `<div class="state-msg">${esc(e.message)}</div>`; return; }
+  body.append(el("div", { style: "color:var(--ink2);font-size:12.5px;margin-bottom:14px" },
+    "系統層級通知,於對應事件發生時即時發送給當事人(部分同時通知管理者)。"
+    + "這些通知不分角色,可個別啟用或停用。"));
+  for (const t of sys.types) {
+    const tog = makeToggle(t.enabled, ["啟用", "停用"]);
+    tog.onchange(async (on) => {
+      try { await api("/notify/system", { method: "PUT",
+          body: JSON.stringify({ key: t.key, enabled: on }) });
+        toast(`「${t.label}」已${on ? "啟用" : "停用"}`); }
+      catch (e) { toast(e.message, true); tog.set(!on); }
+    });
+    body.append(el("div", { style: "display:flex;align-items:center;gap:14px;"
+      + "padding:12px;border:1px solid var(--line);border-radius:8px;"
+      + "margin-bottom:10px;background:var(--panel)" },
+      el("div", { style: "flex:1" },
+        el("div", { style: "font-weight:600;margin-bottom:2px" }, t.label),
+        el("div", { style: "font-size:12px;color:var(--ink2)" }, t.desc || "")),
+      tog.el));
+  }
+}
+
+async function renderNotifyProject(rootBody) {
   let types, teams, history;
   try {
     [types, teams, history] = await Promise.all(
       [api("/notify/types"), api("/teams"), api("/notify/history")]);
-  } catch (e) { $("#content").innerHTML =
+  } catch (e) { rootBody.innerHTML =
     `<div class="state-msg">${esc(e.message)}</div>`; return; }
   S.teams = teams;
   const ROLE_LBL = { pm: "專案經理", dept_head: "部門主管", sales: "業務", dev: "開發人員" };
 
-  // 我可管理的團隊:管理者=全部;否則=我擔任 pm 的團隊
   const myPMteams = isAdmin() ? teams.map(t => t.id)
     : ((S.me && S.me.teams) || []).filter(m => m.role === "pm").map(m => m.team_id);
   const manage = teams.filter(t => myPMteams.includes(t.id));
 
-  const wrap = el("div", { style: "padding:12px" });
+  const wrap = rootBody;
   const headBar = el("div", { style: "display:flex;flex-wrap:wrap;gap:12px;"
     + "align-items:center;justify-content:space-between;margin-bottom:4px" });
   headBar.append(el("div", { style: "font-weight:600;color:var(--navy)" },
@@ -822,7 +968,6 @@ async function renderNotify() {
     }
     wrap.append(el("div", { class: "tbl-wrap" }, el("table", { style: "min-width:720px" }, hh, hb)));
   }
-  $("#content").replaceChildren(wrap);
 }
 
 /* ============================== 甘特圖 ============================== */
@@ -1066,18 +1211,16 @@ async function renderUsers() {
 
   /* ---- 使用者列表 (含團隊歸屬 B.a) ---- */
   const thead = el("thead", {}, el("tr", {},
-    ...["Email","姓名","管理者","狀態","通知信箱","團隊歸屬(勾選)與團隊角色","",""]
+    ...["認證Gmail","認證姓名","管理者","狀態","公司信箱","姓名","團隊歸屬(勾選)與團隊角色","",""]
       .map(h => el("th", {}, h))));
   const tbody = el("tbody");
   const myId = S.me ? S.me.user.id : -1;
   for (const u of users) {
-    const adminCb = el("input", { type: "checkbox" });
-    adminCb.checked = u.role === "admin";
-    const stSel = el("select", {},
-      el("option", { value: "pending" }, "待核准"),
-      el("option", { value: "active" }, "啟用"),
-      el("option", { value: "disabled" }, "停用"));
-    stSel.value = u.status;
+    const adminTog = makeToggle(u.role === "admin", ["是", "否"]);
+    const stTog = makeCycleToggle(u.status, [
+      { value: "pending",  label: "待啟用", color: "var(--amber)" },
+      { value: "active",   label: "啟用",   color: "var(--teal)" },
+      { value: "disabled", label: "停用",   color: "var(--ink2)" }]);
     // 團隊歸屬:每團隊一個勾選 + 團隊角色下拉
     const memberOf = new Map((u.teams || []).map(m => [m.team_id, m.role]));
     const teamCell = el("td", { style: "text-align:left" });
@@ -1085,10 +1228,9 @@ async function renderUsers() {
     // 團隊區鎖定條件:非啟用、或勾了管理者 (A.d 管理者不須團隊歸屬)
     const teamLockReason = () =>
       u.id === myId ? null
-      : stSel.value !== "active" ? "待核准/停用者不歸屬團隊"
-      : adminCb.checked ? "管理者不須指定團隊 (全系統權限)"
+      : stTog.get() !== "active" ? "待啟用/停用者不歸屬團隊"
+      : adminTog.get() ? "管理者不須指定團隊 (全系統權限)"
       : null;
-    let lockTeams = teamLockReason() !== null;
     const teamHint = el("div", { style: "font-size:11.5px;color:var(--ink2)" });
     for (const tm of S.teams) {
       const cb = el("input", { type: "checkbox" });
@@ -1117,21 +1259,27 @@ async function renderUsers() {
       }
       teamHint.textContent = reason || "";
     };
-    adminCb.addEventListener("change", applyTeamLock);
-    stSel.addEventListener("change", applyTeamLock);
+    adminTog.onchange(applyTeamLock);
+    stTog.onchange(applyTeamLock);
     applyTeamLock();
     const notifyIn = el("input", { type: "email", value: u.notify_email || "",
-      placeholder: "公司信箱", style: "width:160px;border:1px solid var(--line);"
+      placeholder: "公司信箱", style: "width:150px;border:1px solid var(--line);"
+        + "border-radius:6px;padding:4px 8px;background:var(--panel);color:var(--ink)" });
+    const cnameIn = el("input", { type: "text", value: u.company_name || "",
+      placeholder: "姓名", style: "width:90px;border:1px solid var(--line);"
         + "border-radius:6px;padding:4px 8px;background:var(--panel);color:var(--ink)" });
     const self = u.id === myId;
-    if (self) { adminCb.disabled = stSel.disabled = true; }
+    if (self) { adminTog.setDisabled(true); stTog.setDisabled(true); }
     const saveBtn = el("button", { class: "btn", onclick: async () => {
       try {
-        await api(`/users/${u.id}`, { method: "PUT", body: JSON.stringify({
-          role: adminCb.checked ? "admin" : "dev", status: stSel.value,
-          notify_email: notifyIn.value.trim(),
-          teams: teamRows.filter(r => r.cb.checked && !r.cb.disabled)
-            .map(r => ({ team_id: r.team_id, role: r.rs.value })) })});
+        const payload = self
+          ? { notify_email: notifyIn.value.trim(), company_name: cnameIn.value.trim() }
+          : { role: adminTog.get() ? "admin" : "dev", status: stTog.get(),
+              notify_email: notifyIn.value.trim(),
+              company_name: cnameIn.value.trim(),
+              teams: teamRows.filter(r => r.cb.checked && !r.cb.disabled)
+                .map(r => ({ team_id: r.team_id, role: r.rs.value })) };
+        await api(`/users/${u.id}`, { method: "PUT", body: JSON.stringify(payload) });
         toast("已更新 " + u.email); renderUsers();
       } catch (e) { toast(e.message, true); }
     }}, "儲存");
@@ -1141,18 +1289,18 @@ async function renderUsers() {
         toast("已刪除"); renderUsers(); }
       catch (e) { toast(e.message, true); }
     }}, "刪除");
-    if (self) { saveBtn.disabled = delBtn.disabled = true; }
+    if (self) { delBtn.disabled = true; }  // 可存自己的联络资讯,但不可删自己
     const tr = el("tr", {},
       el("td", {}, u.email + (self ? "(你)" : "")),
       el("td", {}, u.name || "—"),
-      el("td", {}, adminCb), el("td", {}, stSel),
-      el("td", {}, notifyIn),
+      el("td", {}, adminTog.el), el("td", {}, stTog.el),
+      el("td", {}, notifyIn), el("td", {}, cnameIn),
       teamCell, el("td", {}, saveBtn), el("td", {}, delBtn));
     if (u.status === "pending") tr.style.background = "var(--amber-bg)";
     tbody.append(tr);
   }
   wrap.append(el("div", { class: "tbl-wrap" },
-    el("table", { style: "min-width:860px" }, thead, tbody)));
+    el("table", { style: "min-width:920px" }, thead, tbody)));
 
   /* ---- 欄位權限矩陣 (B.a 下半) ---- */
   wrap.append(el("div", { style: "margin:18px 0 6px;font-weight:600;color:var(--navy)" },

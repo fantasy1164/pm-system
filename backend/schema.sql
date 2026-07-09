@@ -8,7 +8,8 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     email       TEXT NOT NULL UNIQUE,
-    notify_email TEXT,                             -- 通知收件信箱 (公司信箱,與登入 gmail 分開)
+    notify_email TEXT,
+    company_name TEXT,                             -- 通知收件信箱 (公司信箱,與登入 gmail 分開)
     name        TEXT NOT NULL DEFAULT '',
     role        TEXT NOT NULL DEFAULT 'dev'
                 CHECK (role IN ('admin', 'pm', 'dept_head', 'sales', 'dev')),
