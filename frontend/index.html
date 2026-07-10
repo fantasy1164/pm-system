@@ -138,6 +138,21 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px;t
 .frm{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
 .frm label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--ink2)}
 .frm label.full{grid-column:1/-1}
+/* 編輯視窗分組區塊 */
+.fsecs{display:flex;flex-direction:column;gap:14px}
+.fsec{border:1px solid var(--line);border-radius:10px;padding:12px 14px 14px;
+  background:var(--panel-2,rgba(127,127,127,.04))}
+.fsec>.fsec-h{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;
+  color:var(--navy);margin-bottom:10px;letter-spacing:.02em}
+.fsec>.fsec-h .dot{width:8px;height:8px;border-radius:50%;flex:none}
+.fsec-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+.fsec-grid label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--ink2)}
+.fsec-grid label.full{grid-column:1/-1}
+/* 掃描檔核選:做成有標籤的橫向勾選,而非孤立 checkbox */
+.chk-row{flex-direction:row!important;align-items:center;gap:8px;
+  padding:7px 10px;border:1px dashed var(--line);border-radius:7px;
+  background:var(--panel);cursor:pointer;color:var(--ink)}
+.chk-row input{width:16px;height:16px;cursor:pointer;margin:0}
 .frm input,.frm select,.frm textarea{border:1px solid var(--line);border-radius:6px;
   padding:6px 8px;background:var(--panel);color:var(--ink)}
 .frm textarea{resize:vertical;min-height:52px}
@@ -170,6 +185,7 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
   .g-names{flex-basis:118px}
   .g-name .nm{font-size:12px}
   .frm{grid-template-columns:1fr}
+  .fsec-grid{grid-template-columns:1fr}
   .overlay{padding:8px 6px}
   .modal{padding:14px 14px 16px}
 }
@@ -1469,58 +1485,97 @@ function openModal(p) {
   };
 
   const f = {};
-  const frm = el("div", { class: "frm" });
+  // 分組區塊 helper:標題 + 色點 + 內部 2 欄 grid
+  const section = (title, color, ...kids) =>
+    el("div", { class: "fsec" },
+      el("div", { class: "fsec-h" },
+        el("span", { class: "dot", style: `background:${color}` }),
+        el("span", {}, title)),
+      el("div", { class: "fsec-grid" }, ...kids));
+  // 掃描檔核選:做成有標籤的橫向勾選 (一眼看懂是「已完成掃描歸檔」)
+  const scanChk = (label, checked) => {
+    const c = el("input", { type: "checkbox" }); c.checked = !!checked;
+    return { input: c, el: el("label", { class: "chk-row full" }, c,
+      el("span", {}, label)) };
+  };
+
+  // 各欄位元件
+  f.name = el("input", { value: d.name || "" });
+  f.year = (() => { const i = el("input", { type: "number", value: d.year });
+    if (!isNew) i.disabled = true; return i; })();
+  f.status = (() => {
+    const s = el("select", {},
+      el("option", { value: "ongoing" }, "進行中"),
+      el("option", { value: "not_awarded" }, "未成案"),
+      el("option", { value: "closed" }, "已結案"));
+    s.value = d.status; return s; })();
+  f.team_id = (() => {
+    const s = el("select", {}, el("option", { value: "" }, "未指定"),
+      ...S.teams.map(tm => el("option", { value: String(tm.id) }, tm.name)));
+    s.value = d.team_id != null ? String(d.team_id) : ""; return s; })();
+  f.contract_no = el("input", { value: d.contract_no || "" });
+  f.part_no = el("input", { value: d.part_no || "" });
+  f.so_number = el("input", { value: d.so_number || "" });
+  f.awarded_amount = el("input", { type: "number", value: d.awarded_amount ?? "" });
+  const contractScan = scanChk("合約已掃描歸檔", d.contract_scan);
+  f.contract_scan = contractScan.input;
+  f.start_date = el("input", { type: "date", value: d.start_date || "" });
+  f.end_date = el("input", { type: "date", value: d.end_date || "" });
+  f.kickoff_date = el("input", { type: "date", value: d.kickoff_date || "" });
+  f.warranty_years = el("input", { type: "number", min: "0", max: "50",
+    value: d.warranty_years ?? "" });
+  f.nda_date = el("input", { type: "date", value: d.nda_date || "" });
+  const ndaScan = scanChk("保密文件已掃描歸檔", d.nda_scan);
+  f.nda_scan = ndaScan.input;
+  f.notify_days_before = el("input", { type: "number", min: "0", max: "365",
+    placeholder: "留空=不提醒", value: d.notify_days_before ?? "" });
+  f.participants = el("input", { value: d.participants || "",
+    placeholder: "如:外部廠商、支援人力" });
+  f.notes = el("textarea", {}, d.notes || "");
+
+  const frm = el("div", { class: "frm fsecs" });
   frm.append(
-    el("label", { class: "full" }, "案名 *", f.name = el("input", { value: d.name || "" })),
-    el("label", {}, "年度(民國)", f.year = (() => {
-      const i = el("input", { type: "number", value: d.year });
-      if (!isNew) i.disabled = true;   // 年度歸屬由年度複製機制管理,編輯時不改
-      return i;
-    })()),
-    el("label", {}, "狀態", f.status = (() => {
-      const s = el("select", {},
-        el("option", { value: "ongoing" }, "進行中"),
-        el("option", { value: "not_awarded" }, "未成案"),
-        el("option", { value: "closed" }, "已結案"));
-      s.value = d.status; return s;
-    })()),
-    el("label", {}, "契約號", f.contract_no = el("input", { value: d.contract_no || "" })),
-    el("label", {}, "料號", f.part_no = el("input", { value: d.part_no || "" })),
-    el("label", {}, "SO number", f.so_number = el("input", { value: d.so_number || "" })),
-    el("label", {}, "履約起", f.start_date = el("input", { type: "date", value: d.start_date || "" })),
-    el("label", {}, "履約迄", f.end_date = el("input", { type: "date", value: d.end_date || "" })),
-    el("label", {}, "啟動會議", f.kickoff_date = el("input", { type: "date", value: d.kickoff_date || "" })),
-    el("label", {}, "決標金額", f.awarded_amount = el("input", { type: "number", value: d.awarded_amount ?? "" })),
-    el("label", {}, "保固(年)", f.warranty_years = el("input",
-      { type: "number", min: "0", max: "50", value: d.warranty_years ?? "" })),
-    el("label", {}, "里程碑到期前幾天提醒", f.notify_days_before = el("input",
-      { type: "number", min: "0", max: "365", placeholder: "留空=不提醒",
-        value: d.notify_days_before ?? "" })),
-    el("label", {}, "團隊", f.team_id = (() => {
-      const s = el("select", {}, el("option", { value: "" }, "未指定"),
-        ...S.teams.map(tm => el("option", { value: String(tm.id) }, tm.name)));
-      s.value = d.team_id != null ? String(d.team_id) : "";
-      return s;
-    })()),
-    el("label", {}, "合約掃檔", f.contract_scan = (() => {
-      const c = el("input", { type: "checkbox" });
-      c.checked = !!d.contract_scan; return c;
-    })()),
-    el("label", {}, "保密文件簽署日", f.nda_date =
-      el("input", { type: "date", value: d.nda_date || "" })),
-    el("label", {}, "保密文件掃描檔", f.nda_scan = (() => {
-      const c = el("input", { type: "checkbox" });
-      c.checked = !!d.nda_scan; return c;
-    })()),
-    el("label", { class: "full" }, "參與成員(勾選團隊成員,可加備註)", memBox),
-    el("label", { class: "full" }, "其他參與者(未註冊系統者,逗號分隔)",
-      f.participants = el("input", { value: d.participants || "",
-        placeholder: "如:外部廠商、支援人力" })),
-    el("label", { class: "full" }, "各年度預估認列", budBox,
-      el("button", { class: "btn", type: "button", onclick: () => addBudRow() }, "＋ 加一個年度")),
-    el("label", { class: "full" }, "里程碑(顯示於甘特圖)", msBox,
-      el("button", { class: "btn", type: "button", onclick: () => addMsRow() }, "＋ 加一個里程碑")),
-    el("label", { class: "full" }, "備註", f.notes = el("textarea", {}, d.notes || "")),
+    // 基本資料
+    section("基本資料", "var(--navy)",
+      el("label", { class: "full" }, "案名 *", f.name),
+      el("label", {}, "年度(民國)", f.year),
+      el("label", {}, "狀態", f.status),
+      el("label", { class: "full" }, "團隊(決定編輯權與參與成員候選)", f.team_id)),
+    // 契約資訊
+    section("契約資訊", "#c9822e",
+      el("label", {}, "契約號", f.contract_no),
+      el("label", {}, "料號", f.part_no),
+      el("label", {}, "SO number", f.so_number),
+      el("label", {}, "決標金額", f.awarded_amount),
+      contractScan.el),
+    // 期程
+    section("期程", "#2e8bc0",
+      el("label", {}, "履約起", f.start_date),
+      el("label", {}, "履約迄", f.end_date),
+      el("label", {}, "啟動會議", f.kickoff_date),
+      el("label", {}, "保固(年)", f.warranty_years)),
+    // 保密文件 (簽署日 + 掃描檔綁在一起)
+    section("保密文件(NDA)", "#8e5bc0",
+      el("label", {}, "簽署日期", f.nda_date),
+      ndaScan.el),
+    // 通知
+    section("通知設定", "#3aa76d",
+      el("label", { class: "full" }, "里程碑到期前幾天提醒(留空=不提醒)",
+        f.notify_days_before)),
+    // 參與人員
+    section("參與人員", "#c0507a",
+      el("label", { class: "full" }, "參與成員(勾選團隊成員,可加備註)", memBox),
+      el("label", { class: "full" }, "其他參與者(未註冊系統者,逗號分隔)",
+        f.participants)),
+    // 預算與里程碑
+    section("預算與里程碑", "#4a6fa5",
+      el("label", { class: "full" }, "各年度預估認列", budBox,
+        el("button", { class: "btn", type: "button", onclick: () => addBudRow() }, "＋ 加一個年度")),
+      el("label", { class: "full" }, "里程碑(顯示於甘特圖)", msBox,
+        el("button", { class: "btn", type: "button", onclick: () => addMsRow() }, "＋ 加一個里程碑"))),
+    // 備註
+    section("備註", "var(--ink2)",
+      el("label", { class: "full" }, "其他說明", f.notes)),
   );
 
   const actions = el("div", { class: "modal-actions" });
@@ -1566,6 +1621,12 @@ function openModal(p) {
       msLabel.querySelectorAll("input,button").forEach(x => x.disabled = true);
   }
   const editable = isNew ? canCreate() : canEdit(d.id);
+  // 若某分組區塊內所有欄位都因權限不可見,則隱藏整個區塊 (避免空卡片)
+  frm.querySelectorAll(".fsec").forEach(sec => {
+    const labels = [...sec.querySelectorAll("label")];
+    if (labels.length && labels.every(l => l.style.display === "none"))
+      sec.style.display = "none";
+  });
   if (!editable) {
     frm.querySelectorAll("input,select,textarea,button").forEach(x => x.disabled = true);
     actions.querySelectorAll(".primary,.danger").forEach(b => b.remove());
