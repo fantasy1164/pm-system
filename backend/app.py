@@ -132,6 +132,9 @@ def strip_invisible(d, db):
         if level == "invisible":
             for col in FIELD_MAP[fkey]:
                 d.pop(col, None)
+    # members (勾選成員) 與 participants 同權限群:不可見時一併移除
+    if levels.get("participants") == "invisible":
+        d.pop("members", None)
     return d
 
 
@@ -516,7 +519,7 @@ def create_project():
     if err:
         return jsonify({"error": err}), 400
     upsert_milestones(db, pid, ms)
-    if "members" in data:
+    if "members" in data and "participants" not in blocked:
         mem, _e = validate_members(db, pid, data["members"])
         upsert_members(db, pid, mem)
     write_audit(db, "create", "projects", pid, {"new": fields})
@@ -567,7 +570,7 @@ def update_project(pid):
             return jsonify({"error": err}), 400
         upsert_milestones(db, pid, ms)
         changes["milestones"] = ["(replaced)", ms]
-    if "members" in data:
+    if "members" in data and "participants" not in blocked:
         mem, _e = validate_members(db, pid, data["members"])
         upsert_members(db, pid, mem)
         changes["members"] = ["(replaced)", mem]

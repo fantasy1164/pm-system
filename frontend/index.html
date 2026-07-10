@@ -1479,6 +1479,7 @@ function openModal(p) {
   // 參與成員:從專案團隊勾選 (含備註) + 其他參與者自由文字
   const memBox = el("div", { style: "display:flex;flex-direction:column;gap:4px" });
   const memRows = [];   // { user_id, cb, noteIn }
+  let memReadonly = false;   // participants 權限為唯讀時,鎖定勾選與備註
   const memHint = el("div", { style: "font-size:12px;color:var(--ink2)" }, "載入團隊成員中…");
   memBox.append(memHint);
   const alreadyMembers = new Map((d.members || []).map(m => [m.user_id, m.note || ""]));
@@ -1512,6 +1513,7 @@ function openModal(p) {
           + (cb.checked ? "" : "display:none") });
       cb.addEventListener("change", () =>
         noteIn.style.display = cb.checked ? "" : "none");
+      if (memReadonly) { cb.disabled = true; noteIn.disabled = true; }
       memRows.push({ user_id: m.user_id, cb, noteIn });
       memBox.append(el("div", { style: "display:flex;align-items:center;gap:8px" },
         el("label", { style: "display:flex;align-items:center;gap:5px;min-width:150px;"
@@ -1657,6 +1659,16 @@ function openModal(p) {
     if (!canSee("schedule")) msLabel.style.display = "none";
     else if (!canWrite("schedule"))
       msLabel.querySelectorAll("input,button").forEach(x => x.disabled = true);
+  }
+  // 參與成員勾選區 (memBox):與「其他參與者」同屬 participants 權限群
+  const memLabel = memBox.parentElement;   // label.full
+  if (memLabel) {
+    if (!canSee("participants")) memLabel.style.display = "none";
+    else if (!canWrite("participants")) {
+      memReadonly = true;   // loadTeamMembers 動態渲染時據此鎖定
+      // 若成員清單已載入,直接鎖定現有的勾選與備註
+      memRows.forEach(r => { r.cb.disabled = true; r.noteIn.disabled = true; });
+    }
   }
   const editable = isNew ? canCreate() : canEdit(d.id);
   // 若某分組區塊內所有欄位都因權限不可見,則隱藏整個區塊 (避免空卡片)
