@@ -811,12 +811,17 @@ async function renderNotify() {
 }
 
 async function renderNotifySystem(body) {
-  let sys;
-  try { sys = await api("/notify/system"); }
-  catch (e) { body.innerHTML = `<div class="state-msg">${esc(e.message)}</div>`; return; }
+  let sys, history;
+  try {
+    [sys, history] = await Promise.all(
+      [api("/notify/system"), api("/notify/history?scope=system")]);
+  } catch (e) { body.innerHTML = `<div class="state-msg">${esc(e.message)}</div>`; return; }
   body.append(el("div", { style: "color:var(--ink2);font-size:12.5px;margin-bottom:14px" },
     "系統層級通知,於對應事件發生時即時發送給當事人(部分同時通知管理者)。"
     + "這些通知不分角色,可個別啟用或停用。"));
+  // 第1項:通知類型改 grid layout (自動填滿,窄畫面自動換行)
+  const grid = el("div", { style: "display:grid;gap:10px;margin-bottom:22px;"
+    + "grid-template-columns:repeat(auto-fill,minmax(260px,1fr))" });
   for (const t of sys.types) {
     const tog = makeToggle(t.enabled, ["啟用", "停用"]);
     tog.onchange(async (on) => {
@@ -825,21 +830,64 @@ async function renderNotifySystem(body) {
         toast(`「${t.label}」已${on ? "啟用" : "停用"}`); }
       catch (e) { toast(e.message, true); tog.set(!on); }
     });
-    body.append(el("div", { style: "display:flex;align-items:center;gap:14px;"
+    grid.append(el("div", { style: "display:flex;align-items:flex-start;gap:12px;"
       + "padding:12px;border:1px solid var(--line);border-radius:8px;"
-      + "margin-bottom:10px;background:var(--panel)" },
-      el("div", { style: "flex:1" },
+      + "background:var(--panel)" },
+      el("div", { style: "flex:1;min-width:0" },
         el("div", { style: "font-weight:600;margin-bottom:2px" }, t.label),
-        el("div", { style: "font-size:12px;color:var(--ink2)" }, t.desc || "")),
+        el("div", { style: "font-size:12px;color:var(--ink2);line-height:1.5" }, t.desc || "")),
       tog.el));
   }
+  body.append(grid);
+
+  // 第2項:系統通知的發送歷程 (獨立一份)
+  const histHead = el("div", { style: "margin:8px 0 6px;display:flex;"
+    + "align-items:center;gap:10px" },
+    el("span", { style: "font-weight:600;color:var(--navy)" }, "系統通知發送歷程(近 200 筆)"));
+  if (isAdmin() && history.length)
+    histHead.append(el("button", { class: "btn danger",
+      style: "font-size:12.5px;padding:3px 10px", onclick: async () => {
+        if (!confirm(`清空全部系統通知紀錄?此動作僅刪除歷程,不影響已發送的信件。`)) return;
+        // 只清系統類:逐筆刪 (後端 clear 會清全部,故改用逐筆)
+        try {
+          for (const h of history) await api(`/notify/history/${h.id}`, { method: "DELETE" });
+          toast("已清空系統通知紀錄"); renderNotify();
+        } catch (e) { toast(e.message, true); }
+      }}, "清空系統歷程"));
+  body.append(histHead);
+  if (!history.length) {
+    body.append(el("div", { class: "state-msg" }, "尚無系統通知紀錄"));
+    return;
+  }
+  const STLBL = { sent: "已發送", dryrun: "乾跑", failed: "失敗", skipped: "略過" };
+  const TYLBL = Object.fromEntries(sys.types.map(t => [t.key, t.label]));
+  const cols = ["時間", "類型", "主旨", "收件人", "狀態", "詳情"];
+  const hh = el("thead", {}, el("tr", {}, ...cols.map(h => el("th", {}, h))));
+  const hb = el("tbody");
+  for (const n of history) {
+    hb.append(el("tr", {},
+      el("td", {}, n.created_at),
+      el("td", {}, TYLBL[n.ntype] || n.ntype),
+      el("td", { style: "text-align:left" }, n.subject),
+      el("td", { style: "text-align:left;font-size:12px" }, n.recipients || "—"),
+      (() => {
+        const td = el("td", {}, STLBL[n.status] || n.status);
+        if (n.status === "failed") td.style.color = "var(--red)";
+        else if (n.status === "sent") td.style.color = "var(--teal)";
+        return td;
+      })(),
+      el("td", { style: "text-align:left;font-size:12px;color:var(--ink2);"
+        + "max-width:280px;white-space:normal" }, n.detail || "—")));
+  }
+  body.append(el("div", { class: "tbl-wrap" },
+    el("table", { style: "min-width:720px" }, hh, hb)));
 }
 
 async function renderNotifyProject(rootBody) {
   let types, teams, history;
   try {
     [types, teams, history] = await Promise.all(
-      [api("/notify/types"), api("/teams"), api("/notify/history")]);
+      [api("/notify/types"), api("/teams"), api("/notify/history?scope=project")]);
   } catch (e) { rootBody.innerHTML =
     `<div class="state-msg">${esc(e.message)}</div>`; return; }
   S.teams = teams;
@@ -1277,13 +1325,14 @@ async function renderUsers() {
     if (self) { adminTog.setDisabled(true); stTog.setDisabled(true); }
     const saveBtn = el("button", { class: "btn", onclick: async () => {
       try {
+        const teamsPayload = teamRows.filter(r => r.cb.checked && !r.cb.disabled)
+          .map(r => ({ team_id: r.team_id, role: r.rs.value }));
         const payload = self
-          ? { notify_email: notifyIn.value.trim(), company_name: cnameIn.value.trim() }
+          ? { notify_email: notifyIn.value.trim(),
+              company_name: cnameIn.value.trim(), teams: teamsPayload }
           : { role: adminTog.get() ? "admin" : "dev", status: stTog.get(),
               notify_email: notifyIn.value.trim(),
-              company_name: cnameIn.value.trim(),
-              teams: teamRows.filter(r => r.cb.checked && !r.cb.disabled)
-                .map(r => ({ team_id: r.team_id, role: r.rs.value })) };
+              company_name: cnameIn.value.trim(), teams: teamsPayload };
         await api(`/users/${u.id}`, { method: "PUT", body: JSON.stringify(payload) });
         toast("已更新 " + u.email); renderUsers();
       } catch (e) { toast(e.message, true); }
@@ -1345,39 +1394,6 @@ async function renderUsers() {
     }}, "儲存矩陣")));
 
   $("#content").replaceChildren(wrap);
-}
-
-/* --------- 逐案編輯授權 (admin,顯示於編輯視窗) --------- */
-function buildEditorsSection(p) {
-  const box = el("div", { style: "margin-top:14px;border-top:1px solid var(--line);padding-top:10px" },
-    el("div", { style: "font-size:12.5px;color:var(--ink2);margin-bottom:6px" },
-      "逐案編輯授權(勾選者可編輯本案;全域編輯者不需逐案勾選)"));
-  const list = el("div", { style: "display:flex;flex-wrap:wrap;gap:4px 16px" },
-    "載入中…");
-  box.append(list);
-  Promise.all([api("/users"), api(`/projects/${p.id}/editors`)])
-    .then(([users, editors]) => {
-      list.textContent = "";
-      const boxes = [];
-      for (const u of users.filter(u => u.status === "active")) {
-        const cb = el("input", { type: "checkbox" });
-        cb.checked = editors.includes(u.id);
-        cb.dataset.uid = u.id;
-        if (u.role === "admin" || u.can_edit) { cb.checked = true; cb.disabled = true; }
-        else boxes.push(cb);
-        list.append(el("label", { style: "display:flex;gap:4px;align-items:center;font-size:13px" },
-          cb, (u.name || u.email) + (u.can_edit || u.role === "admin" ? "(全域)" : "")));
-      }
-      list.append(el("button", { class: "btn", style: "margin-left:auto", onclick: async () => {
-        const ids = boxes.filter(b => b.checked).map(b => Number(b.dataset.uid));
-        try { await api(`/projects/${p.id}/editors`, {
-          method: "PUT", body: JSON.stringify({ user_ids: ids }) });
-          toast("已更新編輯授權"); }
-        catch (e) { toast(e.message, true); }
-      }}, "儲存授權"));
-    })
-    .catch(e => { list.textContent = e.message; });
-  return box;
 }
 
 /* ============================== 編輯視窗 ============================== */
@@ -1600,7 +1616,7 @@ function openModal(p) {
   const modal = el("div", { class: "modal" },
     el("h2", {}, isNew ? `新增專案(${S.year} 年度)` : (editable ? "編輯專案" : "檢視專案")),
     frm);
-  if (!isNew && S.auth.enabled && isAdmin()) modal.append(buildEditorsSection(d));
+  if (!isNew && S.auth.enabled && isAdmin()) { /* 逐案編輯授權已由權限矩陣取代,移除 */ }
   modal.append(actions);
   let downOnOverlay = false;
   const overlay = el("div", { class: "overlay",

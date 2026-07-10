@@ -1070,9 +1070,22 @@ def put_notify_matrix(team_id):
 @app.get("/api/notify/history")
 @VIEW
 def notify_history():
-    rows = get_db().execute(
-        "SELECT id, ntype, project_id, subject, recipients, status, detail,"
-        " created_at FROM notifications ORDER BY id DESC LIMIT 200").fetchall()
+    # scope=project 只回專案類通知;scope=system 只回系統類;預設全部
+    scope = request.args.get("scope")
+    sys_keys = [t["key"] for t in SYSTEM_NOTIFY_TYPES]
+    sql = ("SELECT id, ntype, project_id, subject, recipients, status, detail,"
+           " created_at FROM notifications")
+    args = []
+    if scope == "system":
+        ph = ",".join("?" * len(sys_keys))
+        sql += f" WHERE ntype IN ({ph})"
+        args = sys_keys
+    elif scope == "project":
+        ph = ",".join("?" * len(sys_keys))
+        sql += f" WHERE ntype NOT IN ({ph})"
+        args = sys_keys
+    sql += " ORDER BY id DESC LIMIT 200"
+    rows = get_db().execute(sql, args).fetchall()
     return jsonify([dict(r) for r in rows])
 
 
@@ -1351,13 +1364,11 @@ def update_user(uid):
     is_self = me and me["id"] == uid
     data = request.get_json(silent=True) or {}
     fields = {k: data[k] for k in USER_EDITABLE if k in data}
-    # 改自己时:只允许联络资讯,敏感栏位 (role/status/teams) 一律忽略避免误锁
+    # 改自己时:允许联络资讯与团队归属,但仍挡 role/status (避免自我降权/停用误锁)
     if is_self:
-        sensitive = [k for k in fields if k not in SELF_EDITABLE]
-        for k in sensitive:
+        blocked = [k for k in ("role", "status") if k in fields]
+        for k in blocked:
             fields.pop(k)
-        if "teams" in data:
-            return jsonify({"error": "不可修改自己的团队归属 (避免误锁)"}), 400
     if "notify_email" in fields:
         ne = (fields["notify_email"] or "").strip()
         if ne and ("@" not in ne or len(ne) > 200):
@@ -1454,34 +1465,6 @@ def delete_user(uid):
     db.commit()
     BACKUP.mark_dirty()
     return jsonify({"deleted": uid})
-
-
-# ------------------------------------------- 逐案編輯授權 (admin)
-@app.get("/api/projects/<int:pid>/editors")
-@ADMIN
-def get_editors(pid):
-    rows = get_db().execute(
-        "SELECT user_id FROM project_editors WHERE project_id = ?",
-        (pid,)).fetchall()
-    return jsonify([r["user_id"] for r in rows])
-
-
-@app.put("/api/projects/<int:pid>/editors")
-@ADMIN
-def set_editors(pid):
-    db = get_db()
-    if db.execute("SELECT 1 FROM projects WHERE id = ? AND deleted = 0",
-                  (pid,)).fetchone() is None:
-        return jsonify({"error": "找不到專案"}), 404
-    ids = (request.get_json(silent=True) or {}).get("user_ids", [])
-    db.execute("DELETE FROM project_editors WHERE project_id = ?", (pid,))
-    for u in ids:
-        db.execute("INSERT OR IGNORE INTO project_editors"
-                   " (project_id, user_id) VALUES (?, ?)", (pid, int(u)))
-    write_audit(db, "update", "project_editors", pid, {"user_ids": ids})
-    db.commit()
-    BACKUP.mark_dirty()
-    return jsonify({"project_id": pid, "user_ids": ids})
 
 
 @app.get("/api/audit")

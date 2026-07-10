@@ -10,7 +10,7 @@
 權限模型:
   - 角色 admin / pm / dept_head / sales / dev;status pending / active / disabled
   - 檢視:所有 active 使用者
-  - 編輯:admin、can_edit=1 (全域授權)、或 project_editors 有列 (逐案授權)
+  - 編輯:admin,或該專案所屬團隊的成員 (欄位層級由權限矩陣控管)
   - 使用者管理:僅 admin
   - JWT 只放 uid,角色與授權每次請求都從 DB 讀 → 管理者改權限即刻生效
 
