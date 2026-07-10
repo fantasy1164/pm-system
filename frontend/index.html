@@ -715,7 +715,12 @@ function renderTable() {
     { f: "schedule", h: "履約起", cell: (p) => el("td", { class: "num" }, rocDate(p.start_date)) },
     { f: "schedule", h: "履約迄", cell: (p) => el("td", { class: "num" }, rocDate(p.end_date)) },
     { f: "schedule", h: "工期", cell: (p) => el("td", { class: "num" }, fmtDur(p.duration_days)) },
-    { f: "participants", h: "參與人員", cell: (p) => el("td", {}, p.participants || "—") },
+    { f: "participants", h: "參與人員", cell: (p) => {
+      const parts = (p.members || []).map(m =>
+        m.note ? `${m.name}(${m.note})` : m.name);
+      if (p.participants) parts.push(p.participants);
+      return el("td", {}, parts.length ? parts.join("、") : "—");
+    } },
     { f: "awarded_amount", h: "決標金額", key: "awarded",
       cell: (p) => el("td", { class: "num" }, fmtAmt(p.awarded_amount)) },
     { f: "budgets", h: "各年度預估認列", key: "budgets", cell: (p) => el("td", {},
@@ -1401,6 +1406,52 @@ function openModal(p) {
   };
   (d.milestones || []).forEach(addMsRow);
 
+  // 參與成員:從專案團隊勾選 (含備註) + 其他參與者自由文字
+  const memBox = el("div", { style: "display:flex;flex-direction:column;gap:4px" });
+  const memRows = [];   // { user_id, cb, noteIn }
+  const memHint = el("div", { style: "font-size:12px;color:var(--ink2)" }, "載入團隊成員中…");
+  memBox.append(memHint);
+  const alreadyMembers = new Map((d.members || []).map(m => [m.user_id, m.note || ""]));
+  const loadTeamMembers = async () => {
+    // 以目前表單選的團隊為準 (使用者在視窗內改團隊時也能重載候選人)
+    const tid = f.team_id ? (f.team_id.value ? Number(f.team_id.value) : null)
+                          : d.team_id;
+    memRows.length = 0;
+    memBox.replaceChildren(memHint);
+    if (!tid) {
+      memHint.textContent = "此專案尚未指定團隊,無法勾選成員(可用下方欄位手動填寫)。";
+      return;
+    }
+    memHint.textContent = "載入團隊成員中…";
+    let list;
+    try { list = await api(`/teams/${tid}/members`); }
+    catch (_e) { memHint.textContent = "無法載入團隊成員。"; return; }
+    memBox.replaceChildren();
+    if (!list.length) {
+      memBox.append(el("div", { style: "font-size:12px;color:var(--ink2)" },
+        "此團隊尚無成員。"));
+      return;
+    }
+    for (const m of list) {
+      const cb = el("input", { type: "checkbox" });
+      cb.checked = alreadyMembers.has(m.user_id);
+      const noteIn = el("input", { placeholder: "備註 (如:承辦)",
+        value: alreadyMembers.get(m.user_id) || "",
+        style: "flex:1;border:1px solid var(--line);border-radius:6px;"
+          + "padding:3px 8px;background:var(--panel);color:var(--ink);font-size:13px;"
+          + (cb.checked ? "" : "display:none") });
+      cb.addEventListener("change", () =>
+        noteIn.style.display = cb.checked ? "" : "none");
+      memRows.push({ user_id: m.user_id, cb, noteIn });
+      memBox.append(el("div", { style: "display:flex;align-items:center;gap:8px" },
+        el("label", { style: "display:flex;align-items:center;gap:5px;min-width:150px;"
+          + "font-size:13px" }, cb,
+          el("span", {}, m.name),
+          el("span", { style: "color:var(--ink2);font-size:11.5px" }, `(${m.role})`)),
+        noteIn));
+    }
+  };
+
   const f = {};
   const frm = el("div", { class: "frm" });
   frm.append(
@@ -1445,7 +1496,10 @@ function openModal(p) {
       const c = el("input", { type: "checkbox" });
       c.checked = !!d.nda_scan; return c;
     })()),
-    el("label", { class: "full" }, "參與人員(逗號分隔)", f.participants = el("input", { value: d.participants || "" })),
+    el("label", { class: "full" }, "參與成員(勾選團隊成員,可加備註)", memBox),
+    el("label", { class: "full" }, "其他參與者(未註冊系統者,逗號分隔)",
+      f.participants = el("input", { value: d.participants || "",
+        placeholder: "如:外部廠商、支援人力" })),
     el("label", { class: "full" }, "各年度預估認列", budBox,
       el("button", { class: "btn", type: "button", onclick: () => addBudRow() }, "＋ 加一個年度")),
     el("label", { class: "full" }, "里程碑(顯示於甘特圖)", msBox,
@@ -1559,6 +1613,8 @@ function openModal(p) {
   document.body.append(overlay);
   const close = () => overlay.remove();
   if (editable) f.name.focus();
+  loadTeamMembers();   // 异步载入团队成员勾选清单
+  if (f.team_id) f.team_id.addEventListener("change", loadTeamMembers);
 
   async function save() {
     const inputYear = parseInt(f.year.value, 10);
@@ -1587,6 +1643,9 @@ function openModal(p) {
         date: r.querySelector(".y").value,
         name: r.querySelector(".a").value.trim(),
       })).filter(m => m.date || m.name),
+      members: memRows.filter(r => r.cb.checked).map(r => ({
+        user_id: r.user_id, note: r.noteIn.value.trim(),
+      })),
     };
     if (!payload.name) return toast("案名為必填", true);
     try {

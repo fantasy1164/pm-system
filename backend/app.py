@@ -217,7 +217,7 @@ def parse_iso(s):
         return None
 
 
-def project_to_dict(row, budgets, milestones=()):
+def project_to_dict(row, budgets, milestones=(), members=()):
     d = dict(row)
     d.pop("deleted", None)
     start, end = parse_iso(d.get("start_date")), parse_iso(d.get("end_date"))
@@ -227,6 +227,12 @@ def project_to_dict(row, budgets, milestones=()):
     ]
     d["milestones"] = [
         {"date": m["date"], "name": m["name"]} for m in milestones
+    ]
+    # 參與成員:勾選的已註冊成員 (含公司姓名/認證姓名 供顯示) + 各自備註
+    d["members"] = [
+        {"user_id": m["user_id"],
+         "name": m["company_name"] or m["name"] or m["email"],
+         "note": m["note"] or ""} for m in members
     ]
     return d
 
@@ -295,6 +301,46 @@ def upsert_budgets(db, project_id, budgets):
         )
 
 
+def fetch_members(db, project_id):
+    """回傳專案的勾選成員 (join users 取顯示名);未註冊者不在此,見 participants"""
+    return db.execute(
+        "SELECT pm.user_id, pm.note, u.company_name, u.name, u.email"
+        " FROM project_members pm JOIN users u ON u.id = pm.user_id"
+        " WHERE pm.project_id = ? ORDER BY u.id", (project_id,)).fetchall()
+
+
+def validate_members(db, project_id, members):
+    """清洗成員清單;僅接受「該專案所屬團隊」的成員,回傳 (list, err)。"""
+    proj = db.execute("SELECT team_id FROM projects WHERE id = ?",
+                      (project_id,)).fetchone()
+    team_id = proj["team_id"] if proj else None
+    # 該團隊的合法成員 id 集合 (無團隊 → 不允許任何勾選成員)
+    valid_ids = set()
+    if team_id:
+        valid_ids = {r["user_id"] for r in db.execute(
+            "SELECT user_id FROM team_members WHERE team_id = ?", (team_id,))}
+    out = []
+    seen = set()
+    for m in members or []:
+        try:
+            uid = int(m.get("user_id"))
+        except (TypeError, ValueError):
+            continue
+        if uid in seen or uid not in valid_ids:
+            continue        # 去重 + 只收該團隊成員 (擋越權塞任意 user)
+        seen.add(uid)
+        note = (m.get("note") or "").strip()[:200]
+        out.append({"user_id": uid, "note": note})
+    return out, None
+
+
+def upsert_members(db, project_id, members):
+    db.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
+    for m in members:
+        db.execute("INSERT INTO project_members (project_id, user_id, note)"
+                   " VALUES (?, ?, ?)", (project_id, m["user_id"], m["note"]))
+
+
 def fetch_project(db, pid):
     row = db.execute(
         "SELECT * FROM projects WHERE id = ? AND deleted = 0", (pid,)
@@ -309,7 +355,8 @@ def fetch_project(db, pid):
         "SELECT date, name FROM milestones"
         " WHERE project_id = ? ORDER BY date", (pid,)
     ).fetchall()
-    return project_to_dict(row, budgets, ms)
+    members = fetch_members(db, pid)
+    return project_to_dict(row, budgets, ms, members)
 
 
 # -------------------------------------------------------------------- CORS
@@ -396,7 +443,7 @@ def list_projects():
     sql += " ORDER BY (start_date IS NULL), start_date, id"
     rows = db.execute(sql, args).fetchall()
     ids = [r["id"] for r in rows]
-    budget_map, ms_map = {}, {}
+    budget_map, ms_map, mem_map = {}, {}, {}
     if ids:
         q = ",".join("?" * len(ids))
         for b in db.execute(
@@ -409,8 +456,16 @@ def list_projects():
             f" WHERE project_id IN ({q}) ORDER BY date", ids
         ):
             ms_map.setdefault(m["project_id"], []).append(m)
+        for pm in db.execute(
+            f"SELECT pm.project_id, pm.user_id, pm.note,"
+            f" u.company_name, u.name, u.email"
+            f" FROM project_members pm JOIN users u ON u.id = pm.user_id"
+            f" WHERE pm.project_id IN ({q}) ORDER BY u.id", ids
+        ):
+            mem_map.setdefault(pm["project_id"], []).append(pm)
     return jsonify([strip_invisible(project_to_dict(
-        r, budget_map.get(r["id"], []), ms_map.get(r["id"], [])), db)
+        r, budget_map.get(r["id"], []), ms_map.get(r["id"], []),
+        mem_map.get(r["id"], [])), db)
         for r in rows])
 
 
@@ -461,6 +516,9 @@ def create_project():
     if err:
         return jsonify({"error": err}), 400
     upsert_milestones(db, pid, ms)
+    if "members" in data:
+        mem, _e = validate_members(db, pid, data["members"])
+        upsert_members(db, pid, mem)
     write_audit(db, "create", "projects", pid, {"new": fields})
     db.commit()
     BACKUP.mark_dirty()
@@ -509,6 +567,10 @@ def update_project(pid):
             return jsonify({"error": err}), 400
         upsert_milestones(db, pid, ms)
         changes["milestones"] = ["(replaced)", ms]
+    if "members" in data:
+        mem, _e = validate_members(db, pid, data["members"])
+        upsert_members(db, pid, mem)
+        changes["members"] = ["(replaced)", mem]
     if changes:
         write_audit(db, "update", "projects", pid, changes)
     db.commit()
@@ -1167,6 +1229,23 @@ def send_email(recipients, subject, body):
 def list_teams():
     rows = get_db().execute("SELECT id, name FROM teams ORDER BY id").fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+@app.get("/api/teams/<int:tid>/members")
+@VIEW
+def team_member_list(tid):
+    """某團隊的 active 成員清單 (供專案參與人勾選;顯示公司姓名)"""
+    rows = get_db().execute(
+        "SELECT u.id, u.company_name, u.name, u.email, tm.role"
+        " FROM team_members tm JOIN users u ON u.id = tm.user_id"
+        " WHERE tm.team_id = ? AND u.status = 'active' ORDER BY u.id", (tid,)
+    ).fetchall()
+    ROLE_TXT = {"pm": "專案經理", "dept_head": "部門主管",
+                "sales": "業務", "dev": "開發人員"}
+    return jsonify([{
+        "user_id": r["id"],
+        "name": r["company_name"] or r["name"] or r["email"],
+        "role": ROLE_TXT.get(r["role"], r["role"])} for r in rows])
 
 
 @app.post("/api/teams")

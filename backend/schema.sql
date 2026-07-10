@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS projects (
     name          TEXT NOT NULL,                  -- 案名
     start_date    TEXT,                           -- 履約起 (YYYY-MM-DD)
     end_date      TEXT,                           -- 履約迄 (YYYY-MM-DD)
-    participants  TEXT NOT NULL DEFAULT '',       -- 參與人員 (自由文字,逗號分隔)
+    participants  TEXT NOT NULL DEFAULT '',       -- 參與人員:未註冊系統者的自由文字 (已註冊成員見 project_members)
     awarded_amount INTEGER,                       -- 決標金額 (NULL=未決標)
     kickoff_date  TEXT,                           -- 啟動會議日期
     warranty_years INTEGER,                       -- 保固年數 (NULL=無/未填)
@@ -111,6 +111,16 @@ CREATE TABLE IF NOT EXISTS milestones (
     name        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ms_project ON milestones (project_id, date);
+
+-- 專案參與成員 (勾選自團隊的已註冊成員 + 各自備註;
+-- 未註冊系統的參與者仍存在 projects.participants 自由文字欄位)
+CREATE TABLE IF NOT EXISTS project_members (
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    note        TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (project_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pm_project ON project_members (project_id);
 
 -- 各年度預估認列 (一個跨年度專案會有多筆)
 CREATE TABLE IF NOT EXISTS budget_allocations (
