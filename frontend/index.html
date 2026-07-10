@@ -15,6 +15,8 @@ document.documentElement.dataset.theme =
   --line:#E2E1DA; --line2:#EFEEE8; --hover:#F4F8F7; --chip:#F3F3EF;
   --teal:#0F766E; --teal-bg:#D9EFEC; --amber:#B45309; --amber-bg:#FBEED8;
   --gray:#6B7280; --gray-bg:#ECECEA; --red:#C2382C; --navy:#1F3A5F;
+  --thead:#CBD6E6; --thead-ink:#1B3556; --thead-line:#A7B8CF;   /* 表頭:明顯區隔內容 */
+  --foot:#E1E7F0;                                               /* 合計列 */
   --radius:8px;
 }
 :root{
@@ -28,6 +30,8 @@ html[data-theme="dark"]{
   --line:#2B323B; --line2:#232930; --hover:#1D2B2A; --chip:#232930;
   --teal:#2DB8A6; --teal-bg:#123B37; --amber:#F0A63A; --amber-bg:#3A2A12;
   --gray:#9CA3AF; --gray-bg:#2A2F36; --red:#F87171; --navy:#9DBCE8;
+  --thead:#3C4859; --thead-ink:#D6E5F8; --thead-line:#54637A;   /* 表頭:明顯提亮區隔 */
+  --foot:#2E3742;                                               /* 合計列 */
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -67,8 +71,9 @@ main{padding:10px}
 /* ---------- table view ---------- */
 .tbl-wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;min-width:960px;font-size:13.5px}
-th{position:sticky;top:0;background:var(--panel2);color:var(--ink2);font-weight:500;
-  text-align:center;padding:8px 10px;border:1px solid var(--line);white-space:nowrap}
+th{position:sticky;top:0;background:var(--thead);color:var(--thead-ink);font-weight:700;
+  text-align:center;padding:9px 10px;border:1px solid var(--thead-line);
+  border-bottom:2px solid var(--thead-line);white-space:nowrap;letter-spacing:.02em}
 td{padding:8px 10px;border:1px solid var(--line2);vertical-align:middle;
   white-space:nowrap;text-align:center}
 tr.row:hover td{background:var(--hover);cursor:pointer}
@@ -88,8 +93,8 @@ td.num{font-variant-numeric:tabular-nums}
 .yc0{--yc:var(--yc0)} .yc1{--yc:var(--yc1)} .yc2{--yc:var(--yc2)}
 .yc3{--yc:var(--yc3)} .yc4{--yc:var(--yc4)} .yc5{--yc:var(--yc5)}
 .budget-chip.cur{box-shadow:0 0 0 2px color-mix(in srgb, var(--yc) 35%, transparent)}
-tfoot td{position:sticky;bottom:0;background:var(--panel2);
-  border:1px solid var(--line);border-top-width:2px;font-weight:600}
+tfoot td{position:sticky;bottom:0;background:var(--foot);
+  border:1px solid var(--thead-line);border-top-width:2px;font-weight:700}
 tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
 tr.grp td.grp-td{background:var(--panel2);text-align:left;font-weight:600;
   color:var(--ink2);padding:6px 10px;border:1px solid var(--line)}
