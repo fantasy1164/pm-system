@@ -1370,7 +1370,7 @@ async function renderUsers() {
     stTog.onchange(applyTeamLock);
     applyTeamLock();
     const notifyIn = el("input", { type: "email", value: u.notify_email || "",
-      placeholder: "公司信箱", style: "width:150px;border:1px solid var(--line);"
+      placeholder: "公司信箱", style: "width:220px;border:1px solid var(--line);"
         + "border-radius:6px;padding:4px 8px;background:var(--panel);color:var(--ink)" });
     const cnameIn = el("input", { type: "text", value: u.company_name || "",
       placeholder: "姓名", style: "width:90px;border:1px solid var(--line);"
