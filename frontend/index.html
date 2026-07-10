@@ -122,6 +122,8 @@ td.notes{white-space:normal;min-width:140px;color:var(--ink2);font-size:12.5px;t
 .wty{display:inline-block;font-size:11px;color:var(--teal);
   border:1px solid var(--teal);border-radius:999px;padding:0 7px;
   margin-left:6px;vertical-align:1px;white-space:nowrap;font-weight:500}
+.sub-label{display:inline-block;font-size:11px;border-radius:999px;padding:0 8px;
+  margin-left:6px;vertical-align:1px;white-space:nowrap;font-weight:600}
 
 /* ---------- gantt ---------- */
 .gantt-bar-ctl{display:flex;gap:8px;align-items:center;padding:10px 12px;
@@ -271,6 +273,22 @@ const projColor = (p) => p.status === "closed"
   ? "var(--gray)" : PALETTE[p.id % PALETTE.length];
 // 團隊配色:依 id 穩定分色 (每個團隊固定一色,不同團隊不同色)
 const teamColor = (id) => PALETTE[id % PALETTE.length];
+// 分包標籤:主包視角顯示「分包TO 團隊」;分包視角顯示「分包FROM 主包團隊」
+function subcontractLabels(p) {
+  const out = [];
+  const chip = (txt, col) => el("span", { class: "sub-label",
+    style: `border:1px solid ${col};color:${col};`
+      + `background:color-mix(in srgb, ${col} 12%, transparent)` }, txt);
+  if (p.is_subcontract_view && p.master_team_id != null) {
+    // 分包視角 (f)
+    out.push(chip(`分包FROM ${teamName(p.master_team_id)}`, teamColor(p.master_team_id)));
+  } else if (Array.isArray(p.subcontract_to) && p.subcontract_to.length) {
+    // 主包視角 (c):可能分包給多個團隊,各一個標籤 (用各團隊色)
+    for (const tid of p.subcontract_to)
+      out.push(chip(`分包TO ${teamName(tid)}`, teamColor(tid)));
+  }
+  return out;
+}
 /* ---- 主題 ---- */
 function applyTheme(mode) {
   document.documentElement.dataset.theme = mode;
@@ -429,7 +447,9 @@ function teamOptions() {   // 可切換的團隊清單 (null=全團隊;"none"=�
 function viewProjects() {  // 依當前團隊過濾
   if (S.team === "none") return [];              // 未加入團隊 → 無專案
   return S.team == null ? S.projects
-       : S.projects.filter(p => p.team_id === S.team);
+       : S.projects.filter(p =>
+           p.team_id === S.team                  // 主包團隊的專案
+           || (p.is_subcontract_view && p.viewing_team_id === S.team));  // 分包給我團隊
 }
 function renderTeamChip() {
   const c = $("#teamChip");
@@ -470,7 +490,11 @@ function canEdit(pid) {
   if (!S.me) return false;
   if (S.me.editable === "all") return true;
   const tid = projTeam(pid);
-  return tid != null && S.me.editable.includes(tid);
+  if (tid != null && S.me.editable.includes(tid)) return true;  // 主包團隊成員
+  // 分包:此案分包給我團隊 → 可編輯 (共享欄位由分包硬規則擋成唯讀)
+  const p = S.projects.find(x => x.id === pid);
+  return !!(p && p.is_subcontract_view
+    && (S.me.teams || []).some(m => m.team_id === p.viewing_team_id));
 }
 // 是否為該專案的專案經理 (管理者恆真;否則須在該專案團隊中角色為 pm)
 function isProjectPM(pid) {
@@ -776,7 +800,8 @@ function renderTable() {
           : el("span", { class: "scan none", title: "尚未收到合約掃檔" }, "—")) },
     { f: "name", h: "案名", cell: (p) => el("td", { class: "name" }, p.name,
         ...(p.warranty_years ? [el("span", { class: "wty" },
-            `保固${p.warranty_years}年`)] : [])) },
+            `保固${p.warranty_years}年`)] : []),
+        ...subcontractLabels(p)) },
     { f: "contract_no", h: "契約號", cell: (p) => el("td", {}, p.contract_no || "—") },
     { f: "so_number", h: "SO number", cell: (p) => el("td", {}, p.so_number || "—") },
     { f: "schedule", h: "履約起", cell: (p) => el("td", { class: "num" }, rocDate(p.start_date)) },
@@ -1172,16 +1197,22 @@ function renderGantt() {
     }
     const estW = (s) => [...s].reduce((w, c) =>
       w + (c.charCodeAt(0) > 255 ? msFont : msFont * 0.56), 0);
-    for (const m of (p.milestones || [])) {
+    const msList = p.is_subcontract_view
+      ? [...(p.master_milestones || []).map(m => ({ ...m, _pfx: "主:" })),
+         ...(p.milestones || []).map(m => ({ ...m, _pfx: "分:" }))]
+      : (p.milestones || []).map(m => ({ ...m, _pfx: "" }));
+    for (const m of msList) {
       const mms = utc(m.date);
       if (mms < lo || mms > hi) continue;
       const mx = X(mms) + px / 2, cy = y + h / 2;
+      const mColor = m._pfx === "主:" ? teamColor(p.master_team_id)
+                   : m._pfx === "分:" ? teamColor(p.viewing_team_id) : fill;
       svg += `<path d="M ${mx} ${cy - msR} L ${mx + msR} ${cy} L ${mx} ${cy + msR} L ${mx - msR} ${cy} Z"`
-           + ` fill="var(--panel)" stroke="${fill}" stroke-width="2">`
+           + ` fill="var(--panel)" stroke="${mColor}" stroke-width="2">`
            + `<title>◇ ${esc(m.name)}
 ${rocDate(m.date)}</title></path>`;
       const [, mo, dd] = m.date.split("-");
-      const label = `${Number(mo)}/${Number(dd)} ${m.name}`;
+      const label = `${Number(mo)}/${Number(dd)} ${m._pfx}${m.name}`;
       const w2 = estW(label) / 2;
       const lx = Math.max(2 + w2, Math.min(W - 2 - w2, mx));   // 邊緣內縮
       const span = [lx - w2 - 5, lx + w2 + 5];
@@ -1191,7 +1222,7 @@ ${rocDate(m.date)}</title></path>`;
       else if (fits(lanes.bottom)) { lanes.bottom.push(span); laneY = y + h + msFont + 1; }
       if (laneY !== null)
         svg += `<text x="${lx}" y="${laneY}" font-size="${msFont}" font-weight="500"`
-             + ` text-anchor="middle" fill="${fill}">${esc(label)}</text>`;
+             + ` text-anchor="middle" fill="${mColor}">${esc(label)}</text>`;
     }
     svg += `<title>${esc(p.name)}\n${rocDate(p.start_date)} ~ ${rocDate(p.end_date)}(${fmtDur(p.duration_days)})\n${STATUS_TXT[p.status]}${p.awarded_amount!=null ? "\n決標 " + fmtAmt(p.awarded_amount) : ""}</title></g>`;
   });
@@ -1500,9 +1531,10 @@ function openModal(p) {
   memBox.append(memHint);
   const alreadyMembers = new Map((d.members || []).map(m => [m.user_id, m.note || ""]));
   const loadTeamMembers = async () => {
-    // 以目前表單選的團隊為準 (使用者在視窗內改團隊時也能重載候選人)
-    const tid = f.team_id ? (f.team_id.value ? Number(f.team_id.value) : null)
-                          : d.team_id;
+    // 分包視角 (d.1):候選人為分包團隊自己的成員;否則以表單選的團隊為準
+    const tid = d.is_subcontract_view ? d.viewing_team_id
+              : (f.team_id ? (f.team_id.value ? Number(f.team_id.value) : null)
+                           : d.team_id);
     memRows.length = 0;
     memBox.replaceChildren(memHint);
     if (!tid) {
@@ -1634,6 +1666,45 @@ function openModal(p) {
       el("label", { class: "full" }, "其他說明", f.notes)),
   );
 
+  // 分包設定 (c/b):主包 pm 或管理者、且非新建、非分包視角 時可設定分包團隊
+  const canManageSub = !isNew && !d.is_subcontract_view && isProjectPM(d.id);
+  if (canManageSub) {
+    const subBox = el("div", { class: "fsec-grid" });
+    const subSection = el("div", { class: "fsec" },
+      el("div", { class: "fsec-h" },
+        el("span", { class: "dot", style: "background:#c0507a" }),
+        el("span", {}, "跨團隊分包")),
+      el("div", { style: "font-size:12px;color:var(--ink2);margin-bottom:8px" },
+        "勾選要分包的團隊 (共享欄位唯讀同步;參與人員、決標、認列、備註、里程碑各團隊獨立)。"),
+      subBox);
+    const subCbs = [];
+    const activeSubs = new Set(d.subcontract_to || []);
+    for (const tm of S.teams) {
+      if (tm.id === d.team_id) continue;   // 主包不能分包給自己
+      const cb = el("input", { type: "checkbox" });
+      cb.checked = activeSubs.has(tm.id);
+      subCbs.push({ team_id: tm.id, cb });
+      const col = teamColor(tm.id);
+      subBox.append(el("label", { class: "chk-row",
+        style: `border-color:${col}` }, cb,
+        el("span", { style: `color:${col};font-weight:600` }, tm.name)));
+    }
+    if (!subCbs.length)
+      subBox.append(el("div", { style: "font-size:12px;color:var(--ink2)" },
+        "尚無其他團隊可分包。"));
+    const subSaveBtn = el("button", { class: "btn", type: "button",
+      style: "margin-top:8px", onclick: async () => {
+        const ids = subCbs.filter(x => x.cb.checked).map(x => x.team_id);
+        try {
+          await api(`/projects/${d.id}/subcontracts`, { method: "PUT",
+            body: JSON.stringify({ team_ids: ids }) });
+          toast("已更新分包設定"); close(); render();
+        } catch (e) { toast(e.message, true); }
+      } }, "儲存分包設定");
+    subSection.append(subSaveBtn);
+    frm.append(subSection);
+  }
+
   const actions = el("div", { class: "modal-actions" });
   // 規則1:刪除鈕僅專案經理 (該專案團隊的 pm) 或管理者可見
   if (!isNew && isProjectPM(d.id))
@@ -1662,6 +1733,14 @@ function openModal(p) {
     if (!fk) continue;
     if (!canSee(fk)) input.closest("label").style.display = "none";
     else if (!canWrite(fk)) input.disabled = true;
+  }
+  // 分包視角 (e):共享欄位一律唯讀 (硬規則,凌駕矩陣);獨立欄位照常
+  if (d.is_subcontract_view) {
+    const SHARED = new Set(["name", "year", "status", "contract_no", "part_no",
+      "so_number", "start_date", "end_date", "kickoff_date", "warranty_years",
+      "team_id", "contract_scan", "nda_date", "nda_scan", "notify_days_before"]);
+    for (const [k, input] of Object.entries(f))
+      if (SHARED.has(k)) input.disabled = true;
   }
   if (!canSee("budgets")) budBox.closest ? null : null;
   const budLabel = budBox.parentElement;   // label.full

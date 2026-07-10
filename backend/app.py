@@ -184,6 +184,10 @@ MIGRATIONS = [
     ("projects", "notify_days_before", "INTEGER"),
     ("users", "notify_email", "TEXT"),
     ("users", "company_name", "TEXT"),
+    # 跨團隊分包:主包/各分包團隊各自一組里程碑、認列、參與成員
+    ("milestones", "team_id", "INTEGER"),
+    ("budget_allocations", "team_id", "INTEGER"),
+    ("project_members", "team_id", "INTEGER"),
 ]
 
 
@@ -196,7 +200,56 @@ def init_db():
         if col not in cols:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
     db.commit()
+    # 分包遷移:既有子表的 team_id 補成該專案的主包 team_id (無縫接軌,
+    # 既有專案無分包關係、行為完全不變)
+    for tbl in ("milestones", "budget_allocations", "project_members"):
+        db.execute(
+            f"UPDATE {tbl} SET team_id = ("
+            f"  SELECT p.team_id FROM projects p WHERE p.id = {tbl}.project_id)"
+            f" WHERE team_id IS NULL")
+    db.commit()
+    _rebuild_constraints_for_subcontract(db)
+    db.commit()
     db.close()
+
+
+def _rebuild_constraints_for_subcontract(db):
+    """SQLite 無法 ALTER 既有 PK/UNIQUE;分包需要 team_id 進入鍵。
+    偵測舊約束並重建表 (一次性,冪等)。"""
+    # project_members:PK 需含 team_id
+    pk = [r[1] for r in db.execute("PRAGMA table_info(project_members)") if r[5]]
+    if "team_id" not in pk:
+        db.executescript("""
+            CREATE TABLE project_members_new (
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                team_id INTEGER,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                note TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (project_id, team_id, user_id));
+            INSERT INTO project_members_new (project_id, team_id, user_id, note)
+                SELECT project_id, team_id, user_id, note FROM project_members;
+            DROP TABLE project_members;
+            ALTER TABLE project_members_new RENAME TO project_members;
+            CREATE INDEX IF NOT EXISTS idx_pm_project ON project_members (project_id);
+        """)
+    # budget_allocations:UNIQUE 需含 team_id
+    idx_sql = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table'"
+        " AND name='budget_allocations'").fetchone()
+    if idx_sql and "team_id, year" not in (idx_sql[0] or ""):
+        db.executescript("""
+            CREATE TABLE budget_allocations_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                team_id INTEGER,
+                year INTEGER NOT NULL,
+                amount INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (project_id, team_id, year));
+            INSERT INTO budget_allocations_new (id, project_id, team_id, year, amount)
+                SELECT id, project_id, team_id, year, amount FROM budget_allocations;
+            DROP TABLE budget_allocations;
+            ALTER TABLE budget_allocations_new RENAME TO budget_allocations;
+        """)
 
 
 def actor():
@@ -287,37 +340,36 @@ def validate_milestones(ms):
     return out, None
 
 
-def upsert_milestones(db, project_id, ms):
-    db.execute("DELETE FROM milestones WHERE project_id = ?", (project_id,))
+def upsert_milestones(db, project_id, ms, team_id):
+    db.execute("DELETE FROM milestones WHERE project_id = ? AND team_id IS ?",
+               (project_id, team_id))
     for m in ms:
-        db.execute("INSERT INTO milestones (project_id, date, name)"
-                   " VALUES (?, ?, ?)", (project_id, m["date"], m["name"]))
+        db.execute("INSERT INTO milestones (project_id, team_id, date, name)"
+                   " VALUES (?, ?, ?, ?)", (project_id, team_id, m["date"], m["name"]))
 
 
-def upsert_budgets(db, project_id, budgets):
-    db.execute("DELETE FROM budget_allocations WHERE project_id = ?", (project_id,))
+def upsert_budgets(db, project_id, budgets, team_id):
+    db.execute("DELETE FROM budget_allocations WHERE project_id = ? AND team_id IS ?",
+               (project_id, team_id))
     for b in budgets or []:
         db.execute(
-            "INSERT INTO budget_allocations (project_id, year, amount)"
-            " VALUES (?, ?, ?)",
-            (project_id, int(b["year"]), int(b.get("amount") or 0)),
+            "INSERT INTO budget_allocations (project_id, team_id, year, amount)"
+            " VALUES (?, ?, ?, ?)",
+            (project_id, team_id, int(b["year"]), int(b.get("amount") or 0)),
         )
 
 
-def fetch_members(db, project_id):
-    """回傳專案的勾選成員 (join users 取顯示名);未註冊者不在此,見 participants"""
+def fetch_members(db, project_id, team_id):
+    """回傳某團隊在此專案的勾選成員 (join users 取顯示名)"""
     return db.execute(
         "SELECT pm.user_id, pm.note, u.company_name, u.name, u.email"
         " FROM project_members pm JOIN users u ON u.id = pm.user_id"
-        " WHERE pm.project_id = ? ORDER BY u.id", (project_id,)).fetchall()
+        " WHERE pm.project_id = ? AND pm.team_id IS ? ORDER BY u.id",
+        (project_id, team_id)).fetchall()
 
 
-def validate_members(db, project_id, members):
-    """清洗成員清單;僅接受「該專案所屬團隊」的成員,回傳 (list, err)。"""
-    proj = db.execute("SELECT team_id FROM projects WHERE id = ?",
-                      (project_id,)).fetchone()
-    team_id = proj["team_id"] if proj else None
-    # 該團隊的合法成員 id 集合 (無團隊 → 不允許任何勾選成員)
+def validate_members(db, project_id, members, team_id):
+    """清洗成員清單;僅接受「指定 team_id 團隊」的成員,回傳 (list, err)。"""
     valid_ids = set()
     if team_id:
         valid_ids = {r["user_id"] for r in db.execute(
@@ -337,11 +389,13 @@ def validate_members(db, project_id, members):
     return out, None
 
 
-def upsert_members(db, project_id, members):
-    db.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
+def upsert_members(db, project_id, members, team_id):
+    db.execute("DELETE FROM project_members WHERE project_id = ? AND team_id IS ?",
+               (project_id, team_id))
     for m in members:
-        db.execute("INSERT INTO project_members (project_id, user_id, note)"
-                   " VALUES (?, ?, ?)", (project_id, m["user_id"], m["note"]))
+        db.execute("INSERT INTO project_members (project_id, team_id, user_id, note)"
+                   " VALUES (?, ?, ?, ?)",
+                   (project_id, team_id, m["user_id"], m["note"]))
 
 
 def fetch_project(db, pid):
@@ -350,16 +404,91 @@ def fetch_project(db, pid):
     ).fetchone()
     if row is None:
         return None
+    master_team = row["team_id"]
+    vteam, is_sub = viewing_team(db, pid, master_team)
+    # 獨立欄位 (認列/里程碑/成員) 取「視角團隊」那組
     budgets = db.execute(
         "SELECT year, amount FROM budget_allocations"
-        " WHERE project_id = ? ORDER BY year", (pid,)
+        " WHERE project_id = ? AND team_id IS ? ORDER BY year", (pid, vteam)
     ).fetchall()
     ms = db.execute(
         "SELECT date, name FROM milestones"
-        " WHERE project_id = ? ORDER BY date", (pid,)
+        " WHERE project_id = ? AND team_id IS ? ORDER BY date", (pid, vteam)
     ).fetchall()
-    members = fetch_members(db, pid)
-    return project_to_dict(row, budgets, ms, members)
+    members = fetch_members(db, pid, vteam)
+    d = project_to_dict(row, budgets, ms, members)
+    # 分包視角:決標金額/備註取該團隊 override (預設空),不洩漏主包值
+    if is_sub:
+        ov = fetch_override(db, pid, vteam)
+        d["awarded_amount"] = ov["awarded_amount"] if ov else None
+        d["notes"] = ov["notes"] if ov else ""
+    # 分包關係資訊 (供前端顯示 label)
+    subs = subcontract_teams(db, pid)
+    d["subcontract_to"] = subs                    # 主包視角:分包給誰
+    d["is_subcontract_view"] = is_sub             # 我是不是以分包身分在看
+    d["master_team_id"] = master_team
+    d["viewing_team_id"] = vteam
+    # 分包視角:額外帶主包里程碑 (供甘特圖顯示「主:」)
+    if is_sub:
+        master_ms = db.execute(
+            "SELECT date, name FROM milestones"
+            " WHERE project_id = ? AND team_id IS ? ORDER BY date",
+            (pid, master_team)).fetchall()
+        d["master_milestones"] = [dict(m) for m in master_ms]
+    return d
+
+
+# ==================== 跨團隊分包 (方向A) 核心 ====================
+def subcontract_teams(db, pid, active_only=True):
+    """回傳此專案的分包團隊 id 清單 (預設只取 active)"""
+    sql = "SELECT team_id FROM project_subcontracts WHERE project_id = ?"
+    if active_only:
+        sql += " AND active = 1"
+    return [r["team_id"] for r in db.execute(sql, (pid,))]
+
+
+def is_subcontract_team(db, pid, team_id, active_only=True):
+    if team_id is None:
+        return False
+    return team_id in subcontract_teams(db, pid, active_only)
+
+
+def viewing_team(db, pid, master_team_id):
+    """判定當前請求者用哪個團隊的視角看此專案。
+    - 管理者 / 開發模式:主包視角 (可看全貌)
+    - 主包團隊成員:主包視角
+    - 分包團隊成員:該分包團隊視角 (取其所屬且為此案 active 分包的團隊)
+    回傳 (team_id, is_sub):team_id=該視角團隊;is_sub=是否分包視角"""
+    u = getattr(g, "user", None)
+    if u is None or u["role"] == "admin":
+        return master_team_id, False
+    my_teams = {r["team_id"] for r in db.execute(
+        "SELECT team_id FROM team_members WHERE user_id = ?", (u["id"],))}
+    if master_team_id in my_teams:
+        return master_team_id, False
+    subs = set(subcontract_teams(db, pid))
+    mine_sub = my_teams & subs
+    if mine_sub:
+        return sorted(mine_sub)[0], True     # 使用者屬多個分包團隊時取最小 id
+    return master_team_id, False             # 其他 (理論上看不到,由資料牆擋)
+
+
+def fetch_override(db, pid, team_id):
+    return db.execute(
+        "SELECT awarded_amount, notes FROM project_team_overrides"
+        " WHERE project_id = ? AND team_id = ?", (pid, team_id)).fetchone()
+
+
+def upsert_override(db, pid, team_id, awarded_amount=None, notes=None):
+    cur = fetch_override(db, pid, team_id)
+    aa = awarded_amount if awarded_amount is not None else (cur["awarded_amount"] if cur else None)
+    nt = notes if notes is not None else (cur["notes"] if cur else "")
+    db.execute(
+        "INSERT INTO project_team_overrides (project_id, team_id, awarded_amount, notes)"
+        " VALUES (?, ?, ?, ?) ON CONFLICT(project_id, team_id)"
+        " DO UPDATE SET awarded_amount = excluded.awarded_amount, notes = excluded.notes",
+        (pid, team_id, aa, nt))
+# ================================================================
 
 
 # -------------------------------------------------------------------- CORS
@@ -431,45 +560,28 @@ def list_projects():
     args = []
     if hide_not_awarded(db):
         sql += " AND status != 'not_awarded'"
-    # Bug2:團隊即資料牆 — 非管理者只能看自己所屬團隊的專案
+    # 團隊即資料牆 + 分包:非管理者可看「主包是自己團隊」或「分包給自己團隊」的專案
     vis = visible_team_ids(db)
     if vis is not None:
         if not vis:
-            return jsonify([])          # 無團隊 → 看不到任何專案
+            return jsonify([])
         ph = ",".join("?" * len(vis))
-        sql += f" AND team_id IN ({ph})"
-        args.extend(vis)
+        sql += (f" AND (team_id IN ({ph})"
+                f" OR id IN (SELECT project_id FROM project_subcontracts"
+                f"           WHERE active = 1 AND team_id IN ({ph})))")
+        args.extend(list(vis) + list(vis))
     if year:
         sql += " AND year = ?"
         args.append(year)
-    # 依履約起始日排序 (先執行的在上面);未填日期者排最後,同日以 id 穩定排序
     sql += " ORDER BY (start_date IS NULL), start_date, id"
     rows = db.execute(sql, args).fetchall()
-    ids = [r["id"] for r in rows]
-    budget_map, ms_map, mem_map = {}, {}, {}
-    if ids:
-        q = ",".join("?" * len(ids))
-        for b in db.execute(
-            f"SELECT project_id, year, amount FROM budget_allocations"
-            f" WHERE project_id IN ({q}) ORDER BY year", ids
-        ):
-            budget_map.setdefault(b["project_id"], []).append(b)
-        for m in db.execute(
-            f"SELECT project_id, date, name FROM milestones"
-            f" WHERE project_id IN ({q}) ORDER BY date", ids
-        ):
-            ms_map.setdefault(m["project_id"], []).append(m)
-        for pm in db.execute(
-            f"SELECT pm.project_id, pm.user_id, pm.note,"
-            f" u.company_name, u.name, u.email"
-            f" FROM project_members pm JOIN users u ON u.id = pm.user_id"
-            f" WHERE pm.project_id IN ({q}) ORDER BY u.id", ids
-        ):
-            mem_map.setdefault(pm["project_id"], []).append(pm)
-    return jsonify([strip_invisible(project_to_dict(
-        r, budget_map.get(r["id"], []), ms_map.get(r["id"], []),
-        mem_map.get(r["id"], [])), db)
-        for r in rows])
+    # 逐案用視角組合 (共享唯讀 + 該團隊獨立欄位),並套欄位可見性
+    out = []
+    for r in rows:
+        d = fetch_project(db, r["id"])
+        if d is not None:
+            out.append(strip_invisible(d, db))
+    return jsonify(out)
 
 
 @app.get("/api/projects/<int:pid>")
@@ -481,10 +593,12 @@ def get_project(pid):
         return jsonify({"error": "找不到專案"}), 404
     if hide_not_awarded(db) and p.get("status") == "not_awarded":
         return jsonify({"error": "找不到專案"}), 404
-    # Bug2:團隊即資料牆 — 非所屬團隊的專案視同不存在
+    # 團隊即資料牆 + 分包:主包團隊 或 分包給我團隊 才可見
     vis = visible_team_ids(db)
-    if vis is not None and p.get("team_id") not in vis:
-        return jsonify({"error": "找不到專案"}), 404
+    if vis is not None:
+        subs = set(subcontract_teams(db, pid))
+        if p.get("master_team_id") not in vis and not (vis & subs):
+            return jsonify({"error": "找不到專案"}), 404
     return jsonify(strip_invisible(p, db))
 
 
@@ -514,14 +628,15 @@ def create_project():
         f"INSERT INTO projects ({cols}) VALUES ({marks})", list(fields.values())
     )
     pid = cur.lastrowid
-    upsert_budgets(db, pid, data.get("budgets"))
+    mteam = fields.get("team_id")
+    upsert_budgets(db, pid, data.get("budgets"), mteam)
     ms, err = validate_milestones(data.get("milestones"))
     if err:
         return jsonify({"error": err}), 400
-    upsert_milestones(db, pid, ms)
+    upsert_milestones(db, pid, ms, mteam)
     if "members" in data and "participants" not in blocked:
-        mem, _e = validate_members(db, pid, data["members"])
-        upsert_members(db, pid, mem)
+        mem, _e = validate_members(db, pid, data["members"], mteam)
+        upsert_members(db, pid, mem, mteam)
     write_audit(db, "create", "projects", pid, {"new": fields})
     db.commit()
     BACKUP.mark_dirty()
@@ -542,6 +657,17 @@ def update_project(pid):
     for k in list(data.keys()):
         if k in blocked:
             data.pop(k)
+    # 分包視角判定:分包團隊只能改自己的獨立欄位,共享欄位一律唯讀 (硬規則)
+    master_team = old["team_id"]
+    vteam, is_sub = viewing_team(db, pid, master_team)
+    SHARED_ONLY_FOR_MASTER = (   # 這些共享欄位分包不可改
+        "name", "year", "status", "contract_no", "part_no", "so_number",
+        "start_date", "end_date", "kickoff_date", "warranty_years",
+        "contract_scan", "nda_date", "nda_scan", "team_id", "notify_days_before")
+    if is_sub:
+        for k in list(data.keys()):
+            if k in SHARED_ONLY_FOR_MASTER:
+                data.pop(k)   # 分包送共享欄位 → 忽略 (唯讀)
     fields, err = validate_project(data, partial=True)
     if err:
         return jsonify({"error": err}), 400
@@ -554,6 +680,15 @@ def update_project(pid):
     changes = {
         f: [old[f], v] for f, v in fields.items() if old[f] != v
     }
+    # 分包視角:awarded_amount / notes 寫入該團隊 override,不動主包 projects
+    if is_sub:
+        ov_amount = fields.pop("awarded_amount", "__none__")
+        ov_notes = fields.pop("notes", "__none__")
+        if ov_amount != "__none__" or ov_notes != "__none__":
+            upsert_override(db, pid, vteam,
+                awarded_amount=(None if ov_amount == "__none__" else ov_amount),
+                notes=(None if ov_notes == "__none__" else ov_notes))
+            changes["override"] = ["(team)", vteam]
     if fields:
         sets = ", ".join(f"{f} = ?" for f in fields)
         db.execute(
@@ -562,17 +697,17 @@ def update_project(pid):
             list(fields.values()) + [pid],
         )
     if "budgets" in data:
-        upsert_budgets(db, pid, data["budgets"])
+        upsert_budgets(db, pid, data["budgets"], vteam)
         changes["budgets"] = ["(replaced)", data["budgets"]]
     if "milestones" in data:
         ms, err = validate_milestones(data["milestones"])
         if err:
             return jsonify({"error": err}), 400
-        upsert_milestones(db, pid, ms)
+        upsert_milestones(db, pid, ms, vteam)
         changes["milestones"] = ["(replaced)", ms]
     if "members" in data and "participants" not in blocked:
-        mem, _e = validate_members(db, pid, data["members"])
-        upsert_members(db, pid, mem)
+        mem, _e = validate_members(db, pid, data["members"], vteam)
+        upsert_members(db, pid, mem, vteam)
         changes["members"] = ["(replaced)", mem]
     if changes:
         write_audit(db, "update", "projects", pid, changes)
@@ -625,6 +760,102 @@ def delete_project(pid):
     db.commit()
     BACKUP.mark_dirty()
     return jsonify({"deleted": pid})
+
+
+# ==================== 分包關係端點 ====================
+def _can_manage_subcontract(db, pid):
+    """管理者 或 主包團隊的 pm 才能設定/解除分包"""
+    u = getattr(g, "user", None)
+    if u is None or u["role"] == "admin":
+        return True
+    proj = db.execute("SELECT team_id FROM projects WHERE id = ?", (pid,)).fetchone()
+    if not proj or proj["team_id"] is None:
+        return False
+    return db.execute(
+        "SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ? AND role = 'pm'",
+        (proj["team_id"], u["id"])).fetchone() is not None
+
+
+@app.get("/api/projects/<int:pid>/subcontracts")
+@VIEW
+def get_subcontracts(pid):
+    db = get_db()
+    rows = db.execute(
+        "SELECT sc.team_id, sc.active, t.name FROM project_subcontracts sc"
+        " JOIN teams t ON t.id = sc.team_id WHERE sc.project_id = ?"
+        " ORDER BY sc.active DESC, t.name", (pid,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.put("/api/projects/<int:pid>/subcontracts")
+@EDIT_PID
+def set_subcontracts(pid):
+    """設定分包團隊 (複選)。管理者或主包 pm 可操作。
+    傳入的 team_ids 為要生效的分包團隊;未列出的既有分包→軟性斷開 (active=0)。"""
+    db = get_db()
+    if not _can_manage_subcontract(db, pid):
+        return jsonify({"error": "僅管理者或主包團隊的專案經理可設定分包"}), 403
+    proj = db.execute("SELECT team_id FROM projects WHERE id = ? AND deleted = 0",
+                      (pid,)).fetchone()
+    if not proj:
+        return jsonify({"error": "找不到專案"}), 404
+    master = proj["team_id"]
+    want = set(int(t) for t in (request.get_json(silent=True) or {}).get("team_ids", []))
+    want.discard(master)                          # 主包不能分包給自己
+    valid_teams = {r["id"] for r in db.execute("SELECT id FROM teams")}
+    want &= valid_teams
+    existing = {r["team_id"]: r["active"] for r in db.execute(
+        "SELECT team_id, active FROM project_subcontracts WHERE project_id = ?", (pid,))}
+    # 要生效的:新增或接回 (active=1)
+    for tid in want:
+        if tid in existing:
+            db.execute("UPDATE project_subcontracts SET active = 1"
+                       " WHERE project_id = ? AND team_id = ?", (pid, tid))
+        else:
+            db.execute("INSERT INTO project_subcontracts (project_id, team_id, active)"
+                       " VALUES (?, ?, 1)", (pid, tid))
+    # 既有但不在 want 的:軟性斷開 (保留資料)
+    for tid, act in existing.items():
+        if tid not in want and act == 1:
+            db.execute("UPDATE project_subcontracts SET active = 0"
+                       " WHERE project_id = ? AND team_id = ?", (pid, tid))
+    write_audit(db, "update", "project_subcontracts", pid, {"team_ids": sorted(want)})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"active": sorted(want)})
+
+
+@app.delete("/api/projects/<int:pid>/subcontracts/<int:team_id>")
+@VIEW
+def delete_my_subcontract_data(pid, team_id):
+    """分包團隊的 pm 在『已軟性斷開』後,清除自己團隊在此專案的分包足跡。
+    僅刪該團隊的獨立資料 (認列/里程碑/成員/override + 分包關係列),不動主包專案。"""
+    db = get_db()
+    u = getattr(g, "user", None)
+    # 權限:該分包團隊的 pm (或管理者)
+    is_admin = u is not None and u["role"] == "admin"
+    is_sub_pm = u is not None and db.execute(
+        "SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ? AND role = 'pm'",
+        (team_id, u["id"])).fetchone() is not None
+    if not (is_admin or is_sub_pm):
+        return jsonify({"error": "僅該分包團隊的專案經理可刪除自己的分包資料"}), 403
+    sc = db.execute("SELECT active FROM project_subcontracts"
+                    " WHERE project_id = ? AND team_id = ?", (pid, team_id)).fetchone()
+    if sc is None:
+        return jsonify({"error": "查無此分包關係"}), 404
+    if sc["active"] == 1:
+        return jsonify({"error": "請先由主包解除分包 (軟性斷開) 後才能刪除"}), 400
+    # 清除該團隊的分包足跡
+    db.execute("DELETE FROM milestones WHERE project_id = ? AND team_id = ?", (pid, team_id))
+    db.execute("DELETE FROM budget_allocations WHERE project_id = ? AND team_id = ?", (pid, team_id))
+    db.execute("DELETE FROM project_members WHERE project_id = ? AND team_id = ?", (pid, team_id))
+    db.execute("DELETE FROM project_team_overrides WHERE project_id = ? AND team_id = ?", (pid, team_id))
+    db.execute("DELETE FROM project_subcontracts WHERE project_id = ? AND team_id = ?", (pid, team_id))
+    write_audit(db, "delete", "project_subcontracts", pid, {"team_id": team_id, "purged": True})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"purged_team": team_id})
+# ================================================================
 
 
 @app.post("/api/years/<int:new_year>/init")

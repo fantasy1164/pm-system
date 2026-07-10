@@ -133,11 +133,19 @@ def can_edit_project(db, user, project_id):
     row = db.execute(
         "SELECT p.team_id FROM projects p WHERE p.id = ?",
         (project_id,)).fetchone()
-    if row is None or row["team_id"] is None:
-        return False   # 未指定團隊的專案僅管理者可編輯
-    return db.execute(
+    if row is None:
+        return False
+    if row["team_id"] is not None and db.execute(
         "SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?",
-        (row["team_id"], user["id"])).fetchone() is not None
+        (row["team_id"], user["id"])).fetchone():
+        return True   # 主包團隊成員
+    # 分包:屬於此案 active 分包團隊的成員也可編輯 (僅自己的獨立欄位,
+    # 共享欄位由 update_project 的硬規則擋成唯讀)
+    return db.execute(
+        "SELECT 1 FROM team_members tm"
+        " JOIN project_subcontracts sc ON sc.team_id = tm.team_id"
+        " WHERE tm.user_id = ? AND sc.project_id = ? AND sc.active = 1",
+        (user["id"], project_id)).fetchone() is not None
 
 
 def require_edit(get_db, project_id_arg=None):

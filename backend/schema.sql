@@ -107,6 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications (created_at DESC);
 CREATE TABLE IF NOT EXISTS milestones (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    team_id     INTEGER REFERENCES teams(id),      -- 分包:主包/各分包團隊各自的里程碑
     date        TEXT NOT NULL,                    -- YYYY-MM-DD
     name        TEXT NOT NULL
 );
@@ -116,9 +117,10 @@ CREATE INDEX IF NOT EXISTS idx_ms_project ON milestones (project_id, date);
 -- 未註冊系統的參與者仍存在 projects.participants 自由文字欄位)
 CREATE TABLE IF NOT EXISTS project_members (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    team_id     INTEGER,                          -- 分包:主包/各分包團隊各自的參與成員
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     note        TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (project_id, user_id)
+    PRIMARY KEY (project_id, team_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_pm_project ON project_members (project_id);
 
@@ -126,9 +128,10 @@ CREATE INDEX IF NOT EXISTS idx_pm_project ON project_members (project_id);
 CREATE TABLE IF NOT EXISTS budget_allocations (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    team_id     INTEGER,                          -- 分包:主包/各分包團隊各自的認列
     year        INTEGER NOT NULL,                 -- 認列年度 (民國)
     amount      INTEGER NOT NULL DEFAULT 0,       -- 預估認列金額
-    UNIQUE (project_id, year)
+    UNIQUE (project_id, team_id, year)
 );
 
 -- 單一專案的編輯授權 (管理者指派;全域 can_edit=1 者不需逐案授權)
@@ -136,6 +139,27 @@ CREATE TABLE IF NOT EXISTS project_editors (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     PRIMARY KEY (project_id, user_id)
+);
+
+-- 跨團隊分包關係 (方向A:主包專案分包給多個團隊)
+-- active=1 生效;=0 軟性斷開 (保留分包團隊已填資料,可再接回)
+CREATE TABLE IF NOT EXISTS project_subcontracts (
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    team_id     INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    PRIMARY KEY (project_id, team_id)
+);
+CREATE INDEX IF NOT EXISTS idx_subc_project ON project_subcontracts (project_id);
+CREATE INDEX IF NOT EXISTS idx_subc_team ON project_subcontracts (team_id);
+
+-- 分包團隊在專案上的獨立單值欄位 (決標金額、備註;主包的仍存 projects 表)
+CREATE TABLE IF NOT EXISTS project_team_overrides (
+    project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    team_id        INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    awarded_amount INTEGER,
+    notes          TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (project_id, team_id)
 );
 
 -- 異動紀錄
