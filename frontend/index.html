@@ -8,15 +8,18 @@
 document.documentElement.dataset.theme =
   localStorage.getItem("pm_theme") ||
   (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+document.documentElement.style.setProperty("--fs-scale",
+  String(parseFloat(localStorage.getItem("pm_fs")) || 1));
 </script>
 <style>
 :root{
-  --bg:#F6F6F2; --panel:#FFFFFF; --panel2:#FAFAF7; --ink:#1F2933; --ink2:#5B6572;
-  --line:#E2E1DA; --line2:#EFEEE8; --hover:#F4F8F7; --chip:#F3F3EF;
-  --teal:#0F766E; --teal-bg:#D9EFEC; --amber:#B45309; --amber-bg:#FBEED8;
-  --gray:#6B7280; --gray-bg:#ECECEA; --red:#C2382C; --navy:#1F3A5F;
-  --thead:#CBD6E6; --thead-ink:#1B3556; --thead-line:#A7B8CF;   /* 表頭:明顯區隔內容 */
-  --foot:#E1E7F0;                                               /* 合計列 */
+  /* 日間:柔和冷灰藍底 → 純白面板浮起 → 板岩藍表頭,層次分明好讀 */
+  --bg:#EEF1F5; --panel:#FFFFFF; --panel2:#F4F6FA; --ink:#141A22; --ink2:#525E6E;
+  --line:#D2D9E3; --line2:#E4E9F0; --hover:#EAF1F6; --chip:#EDF0F5;
+  --teal:#0B7A6E; --teal-bg:#CDEBE5; --amber:#A85A00; --amber-bg:#FBE6C7;
+  --gray:#5F6B7A; --gray-bg:#E3E7ED; --red:#C22E28; --navy:#1B3A63;
+  --thead:#3A506E; --thead-ink:#FFFFFF; --thead-line:#2C4059;   /* 表頭:深板岩藍配白字,強烈區隔 */
+  --foot:#DDE4EE;
   --radius:8px;
 }
 :root{
@@ -26,18 +29,20 @@ document.documentElement.dataset.theme =
 html[data-theme="dark"]{
   --yc0:#4CC3DD; --yc1:#F0A63A; --yc2:#B79CF7;
   --yc3:#F472B6; --yc4:#9CCC5A; --yc5:#7DA7F8;
-  --bg:#101317; --panel:#181C21; --panel2:#1E242B; --ink:#E6E9ED; --ink2:#98A2AE;
-  --line:#2B323B; --line2:#232930; --hover:#1D2B2A; --chip:#232930;
-  --teal:#2DB8A6; --teal-bg:#123B37; --amber:#F0A63A; --amber-bg:#3A2A12;
-  --gray:#9CA3AF; --gray-bg:#2A2F36; --red:#F87171; --navy:#9DBCE8;
-  --thead:#3C4859; --thead-ink:#D6E5F8; --thead-line:#54637A;   /* 表頭:明顯提亮區隔 */
-  --foot:#2E3742;                                               /* 合計列 */
+  /* 夜間:深藍黑底 → 面板明顯浮起 → 表頭再亮一階,層次清楚且護眼 */
+  --bg:#0C0F14; --panel:#171C24; --panel2:#1F2630; --ink:#EAEEF3; --ink2:#9BA6B4;
+  --line:#313A47; --line2:#252D38; --hover:#1C2933; --chip:#252D38;
+  --teal:#35C9B5; --teal-bg:#0E3D38; --amber:#F5B04A; --amber-bg:#3E2C12;
+  --gray:#9AA5B3; --gray-bg:#2C333D; --red:#FB7C74; --navy:#A9C6EE;
+  --thead:#3B4A5F; --thead-ink:#EAF2FD; --thead-line:#54657D;   /* 表頭:明顯提亮配亮字 */
+  --foot:#232C37;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
+html{--fs-scale:1}
 body{background:var(--bg);color:var(--ink);
   font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",system-ui,sans-serif;
-  font-size:15px;line-height:1.6}
+  font-size:15px;line-height:1.6;zoom:var(--fs-scale)}
 button{font:inherit;cursor:pointer}
 input,select,textarea{font:inherit;color:var(--ink)}
 
@@ -65,7 +70,12 @@ header h1{font-size:17px;font-weight:600;margin:0;color:var(--navy);letter-spaci
 
 /* ---------- layout ---------- */
 main{padding:10px}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  box-shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04)}
+.fs-ctrl{display:inline-flex;gap:0}
+.fs-btn{padding:5px 9px;font-weight:700;min-width:34px}
+.fs-btn#fsDown{border-radius:var(--radius) 0 0 var(--radius);font-size:12px}
+.fs-btn#fsUp{border-radius:0 var(--radius) var(--radius) 0;border-left:none;font-size:15px}
 .state-msg{padding:48px 16px;text-align:center;color:var(--ink2)}
 
 /* ---------- table view ---------- */
@@ -220,6 +230,10 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
     <button id="vNotify" style="display:none">訊息通知</button>
   </div>
   <button class="btn primary" id="btnAdd">＋ 新增專案</button>
+  <div class="fs-ctrl" title="調整全系統字體大小">
+    <button class="btn fs-btn" id="fsDown" title="縮小字體">A−</button>
+    <button class="btn fs-btn" id="fsUp" title="放大字體">A+</button>
+  </div>
   <button class="btn" id="themeBtn" title="切換深/淺色主題">🌓</button>
   <button class="user-chip" id="userChip" title="點擊設定操作者名稱"></button>
 </header>
@@ -260,9 +274,28 @@ function applyTheme(mode) {
   document.documentElement.dataset.theme = mode;
   localStorage.setItem("pm_theme", mode);
 }
+/* ---- 字級縮放 (全系統) ---- */
+const FS_MIN = 0.8, FS_MAX = 1.5, FS_STEP = 0.1;
+function applyFontScale(scale) {
+  scale = Math.min(FS_MAX, Math.max(FS_MIN, Math.round(scale * 10) / 10));
+  document.documentElement.style.setProperty("--fs-scale", String(scale));
+  localStorage.setItem("pm_fs", String(scale));
+  const dn = $("#fsDown"), up = $("#fsUp");
+  if (dn) dn.disabled = scale <= FS_MIN + 1e-9;
+  if (up) up.disabled = scale >= FS_MAX - 1e-9;
+  return scale;
+}
+function currentFontScale() {
+  return parseFloat(localStorage.getItem("pm_fs")) || 1;
+}
 document.addEventListener("DOMContentLoaded", () => {
   $("#themeBtn").addEventListener("click", () =>
     applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
+  applyFontScale(currentFontScale());   // 套用記住的字級
+  $("#fsDown").addEventListener("click", () =>
+    applyFontScale(currentFontScale() - FS_STEP));
+  $("#fsUp").addEventListener("click", () =>
+    applyFontScale(currentFontScale() + FS_STEP));
 });
 
 /* ============================== 小工具 ============================== */
