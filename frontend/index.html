@@ -269,6 +269,8 @@ const PALETTE = ["#0F766E","#2563EB","#B45309","#7C3AED","#C2410C","#0E7490",
                  "#BE185D","#4D7C0F","#B91C1C","#6D28D9","#0369A1","#A16207"];
 const projColor = (p) => p.status === "closed"
   ? "var(--gray)" : PALETTE[p.id % PALETTE.length];
+// 團隊配色:依 id 穩定分色 (每個團隊固定一色,不同團隊不同色)
+const teamColor = (id) => PALETTE[id % PALETTE.length];
 /* ---- 主題 ---- */
 function applyTheme(mode) {
   document.documentElement.dataset.theme = mode;
@@ -436,6 +438,17 @@ function renderTeamChip() {
   c.style.display = "";
   c.textContent = S.team === "none" ? "未加入團隊"
                 : S.team == null ? "全團隊" : teamName(S.team);
+  // 切到特定團隊時,chip 反映該團隊顏色;全團隊/未加入用中性色
+  if (S.team != null && S.team !== "none") {
+    const col = teamColor(S.team);
+    c.style.borderColor = col;
+    c.style.color = col;
+    c.style.background = `color-mix(in srgb, ${col} 12%, transparent)`;
+  } else {
+    c.style.borderColor = "";
+    c.style.color = "";
+    c.style.background = "";
+  }
   const switchable = opts.length > 1;
   c.title = S.team === "none" ? "你尚未被指派任何團隊,請洽管理者"
           : switchable ? "點擊切換團隊" : "你所屬的團隊";
@@ -1296,7 +1309,10 @@ async function renderUsers() {
   const teamBar = el("div", { style: "display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px" },
     el("span", { style: "color:var(--ink2);font-size:13px" }, "團隊:"));
   for (const tm of S.teams) {
-    teamBar.append(el("span", { class: "badge ongoing", style: "font-size:13px;padding:3px 10px" },
+    const col = teamColor(tm.id);
+    teamBar.append(el("span", { class: "badge",
+      style: `font-size:13px;padding:3px 10px;border:1.5px solid ${col};`
+        + `color:${col};background:color-mix(in srgb, ${col} 12%, transparent)` },
       tm.name, el("button", { style: "border:0;background:none;color:var(--red);margin-left:5px;cursor:pointer",
         title: "刪除團隊", onclick: async () => {
           if (!confirm(`刪除團隊「${tm.name}」?(仍有專案或成員歸屬時會被擋下)`)) return;
