@@ -228,6 +228,7 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
   <div class="view-toggle" role="tablist">
     <button id="vTable" class="active">總表</button>
     <button id="vGantt">甘特圖</button>
+    <button id="vWarranty">保固中</button>
     <button id="vUsers" style="display:none">權限設定</button>
     <button id="vNotify" style="display:none">訊息通知</button>
   </div>
@@ -402,6 +403,20 @@ const rocDate = (iso) => {
 };
 const utc = (iso) => { const [y,m,d] = iso.split("-").map(Number); return Date.UTC(y, m-1, d); };
 const DAY = 86400000;
+// 保固期 = 履約迄日 ~ 履約迄日 + 保固年數。回傳保固相關資訊 (無保固/無迄日則 null)
+function warrantyInfo(p) {
+  if (!p.warranty_years || !p.end_date) return null;
+  const start = utc(p.end_date);                 // 保固起日 = 履約迄日
+  const e = new Date(start);
+  e.setUTCFullYear(e.getUTCFullYear() + Number(p.warranty_years));
+  const end = e.getTime();                        // 保固迄日
+  const today = utc(todayISO());
+  return { start, end,
+    active: today >= start && today <= end,       // 目前在保固期內
+    endISO: `${e.getUTCFullYear()}-${String(e.getUTCMonth()+1).padStart(2,"0")}`
+            + `-${String(e.getUTCDate()).padStart(2,"0")}`,
+    daysLeft: Math.ceil((end - today) / DAY) };    // 距保固結束天數
+}
 const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
@@ -719,11 +734,13 @@ $("#userChip").addEventListener("click", () => {
 });
 $("#vTable").addEventListener("click", () => setView("table"));
 $("#vGantt").addEventListener("click", () => setView("gantt"));
+$("#vWarranty").addEventListener("click", () => setView("warranty"));
 $("#vUsers").addEventListener("click", () => setView("users"));
 $("#vNotify").addEventListener("click", () => setView("notify"));
 function setView(v) {
   S.view = v;
   for (const [id, name] of [["#vTable","table"],["#vGantt","gantt"],
+                            ["#vWarranty","warranty"],
                             ["#vUsers","users"],["#vNotify","notify"]])
     $(id).classList.toggle("active", v === name);
   render();
@@ -790,16 +807,27 @@ const storedW = (key, def) => Number(localStorage.getItem(key)) || def;
 function render() {
   if (S.view === "users") return renderUsers();
   if (S.view === "notify") return renderNotify();
+  if (S.view === "warranty") return renderWarranty();
   if (!viewProjects().length) return renderTable();  // 空狀態訊息由 renderTable 處理
   if (S.view === "table") renderTable(); else renderGantt();
 }
 
-function renderTable() {
-  const list = viewProjects();
+// 保固中清單:履約已迄、目前落在保固期內的專案
+function renderWarranty() {
+  const list = viewProjects().filter(p => {
+    const w = warrantyInfo(p);
+    return w && w.active;
+  });
+  renderTable(list, "warranty");
+}
+
+function renderTable(listArg, mode) {
+  const list = listArg || viewProjects();
   if (!list.length) {
     $("#content").innerHTML =
       `<div class="state-msg">${
-        S.team === "none" ? "你尚未被指派任何團隊,無法檢視專案資料,請洽管理者。"
+        mode === "warranty" ? "目前沒有處於保固期內的專案"
+        : S.team === "none" ? "你尚未被指派任何團隊,無法檢視專案資料,請洽管理者。"
         : S.team != null ? "此團隊在本年度尚無專案"
         : "此年度尚無專案,點右上「＋ 新增專案」開始建立"}</div>`;
     return;
@@ -838,6 +866,24 @@ function renderTable() {
             el("span", { class: "ba" }, fmtAmt(b.amount))))) },
     { f: "notes", h: "備註", cell: (p) => el("td", { class: "notes" }, p.notes || "") },
   ].filter(c => canSee(c.f));
+
+  // 保固中模式:在「工期」欄後插入保固期資訊欄 (保固起迄 + 剩餘天數)
+  if (mode === "warranty") {
+    const wCol = { f: "schedule", h: "保固期", cell: (p) => {
+      const w = warrantyInfo(p);
+      if (!w) return el("td", {}, "—");
+      const badge = el("span", { class: "wty",
+        style: w.daysLeft <= 90
+          ? "color:var(--red);border-color:var(--red)" : "" },
+        w.daysLeft <= 0 ? "已到期" : `剩 ${w.daysLeft} 天`);
+      return el("td", {},
+        `${rocDate(p.end_date)} ~ ${rocDate(w.endISO)}`, badge);
+    } };
+    // 找「工期」欄的位置,插在其後 (canSee(schedule) 為真時工期欄才在)
+    const durIdx = COLS.findIndex(c => c.h === "工期");
+    if (durIdx >= 0) COLS.splice(durIdx + 1, 0, wCol);
+    else COLS.push(wCol);
+  }
 
   const thead = el("thead", {}, el("tr", {}, ...COLS.map(c => {
     const th = el("th", {}, c.h);
