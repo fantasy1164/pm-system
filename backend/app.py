@@ -590,12 +590,15 @@ def list_projects():
 
 def project_views_for_user(db, pid, master_team):
     """回傳使用者對此案應呈現的視角清單 [(team_id, is_sub), ...]。
-    - 管理者/開發模式:單一主包視角
+    - 管理者/開發模式:主包視角 + 每個 active 分包團隊視角 (綜觀全貌)
     - 一般使用者:是主包成員→主包視角;是 active 分包團隊成員→各分包視角
       (雙棲者兩者皆有,故可能回傳多筆)"""
     u = getattr(g, "user", None)
     if u is None or u["role"] == "admin":
-        return [(master_team, False)]
+        views = [(master_team, False)]
+        for st in subcontract_teams(db, pid):
+            views.append((st, True))                # 管理者也看得到各分包
+        return views
     my_teams = {r["team_id"] for r in db.execute(
         "SELECT team_id FROM team_members WHERE user_id = ?", (u["id"],))}
     views = []
@@ -685,6 +688,14 @@ def update_project(pid):
     # 分包視角判定:分包團隊只能改自己的獨立欄位,共享欄位一律唯讀 (硬規則)
     master_team = old["team_id"]
     vteam, is_sub = viewing_team(db, pid, master_team)
+    # 若本次同時變更 team_id (指派/改主包團隊),主包視角的獨立資料
+    # (里程碑/認列/成員) 應寫到「新的」team_id,否則會遺留在舊 team_id 讀不到
+    if not is_sub and "team_id" in data:
+        new_team = data.get("team_id")
+        if new_team is not None:
+            new_team = int(new_team)
+        if new_team != vteam:
+            vteam = new_team
     SHARED_ONLY_FOR_MASTER = (   # 這些共享欄位分包不可改
         "name", "year", "status", "contract_no", "part_no", "so_number",
         "start_date", "end_date", "kickoff_date", "warranty_years",
