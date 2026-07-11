@@ -117,6 +117,10 @@ tr.grp td.grp-td.ongoing{color:var(--teal)}
 tr.grp td.grp-td.not_awarded{color:var(--amber)}
 tr.grp td.grp-td.closed{color:var(--gray)}
 tr.grp td.grp-td.warranty{color:var(--navy)}
+.wty-sec-h{font-weight:700;font-size:15px;padding:12px 4px 8px;margin-top:6px;
+  border-bottom:2px solid var(--line)}
+.wty-sec-h.active{color:var(--navy)}
+.wty-sec-h.expired{color:var(--gray)}
 .scan{font-size:14px} .scan.none{color:var(--ink2)}
 .col-resizer{position:absolute;top:0;right:-4px;width:8px;height:100%;
   cursor:col-resize;z-index:5;touch-action:none}
@@ -232,8 +236,9 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
   <button class="btn" id="btnNewYear" title="建立新年度並複製跨年度專案">＋ 新年度</button>
   <span class="spacer"></span>
   <div class="view-toggle" role="tablist">
-    <button id="vTable" class="active">總表</button>
+    <button id="vTable" class="active">進度總表</button>
     <button id="vGantt">甘特圖</button>
+    <button id="vWarranty">保固總表</button>
     <button id="vUsers" style="display:none">權限設定</button>
     <button id="vNotify" style="display:none">訊息通知</button>
   </div>
@@ -550,11 +555,11 @@ function isAdmin() {
 }
 function applyPerms() {
   $("#btnAdd").style.display = canCreate() ? "" : "none";
-  $("#btnNewYear").style.display = canCreate() ? "" : "none";
   $("#vUsers").style.display = isAdmin() ? "" : "none";
   const isAnyPM = isAdmin() ||
     ((S.me && S.me.teams) || []).some(m => m.role === "pm");
   $("#vNotify").style.display = (S.auth.enabled && isAnyPM) || !S.auth.enabled ? "" : "none";
+  applyYearControlsVisibility();
 }
 function logout(msg) {
   setTok(null); S.me = null; clearTimeout(idleT);
@@ -739,14 +744,25 @@ $("#userChip").addEventListener("click", () => {
 });
 $("#vTable").addEventListener("click", () => setView("table"));
 $("#vGantt").addEventListener("click", () => setView("gantt"));
+$("#vWarranty").addEventListener("click", () => setView("warranty"));
 $("#vUsers").addEventListener("click", () => setView("users"));
 $("#vNotify").addEventListener("click", () => setView("notify"));
 function setView(v) {
   S.view = v;
   for (const [id, name] of [["#vTable","table"],["#vGantt","gantt"],
+                            ["#vWarranty","warranty"],
                             ["#vUsers","users"],["#vNotify","notify"]])
     $(id).classList.toggle("active", v === name);
+  applyYearControlsVisibility();
   render();
+}
+// 年度頁籤與「＋新年度」按鈕:僅在進度總表/甘特圖 (依年度檢視) 時顯示;
+// 保固總表跨年度、權限/通知頁與年度無關,一律隱藏
+function applyYearControlsVisibility() {
+  const yearScoped = S.view === "table" || S.view === "gantt";
+  $("#yearTabs").style.display = yearScoped ? "" : "none";
+  $("#btnNewYear").style.display =
+    (yearScoped && canCreate()) ? "" : "none";
 }
 $("#btnAdd").addEventListener("click", () => openModal(null));
 $("#btnNewYear").addEventListener("click", async () => {
@@ -865,6 +881,7 @@ function attachGroupDrag(tr, st) {
 function render() {
   if (S.view === "users") return renderUsers();
   if (S.view === "notify") return renderNotify();
+  if (S.view === "warranty") return renderWarranty();
   if (!viewProjects().length) return renderTable();  // 空狀態訊息由 renderTable 處理
   if (S.view === "table") renderTable(); else renderGantt();
 }
@@ -1227,6 +1244,64 @@ async function renderNotifyProject(rootBody) {
     }
     wrap.append(el("div", { class: "tbl-wrap" }, el("table", { style: "min-width:720px" }, hh, hb)));
   }
+}
+
+/* ============================== 保固總表 ============================== */
+// 跨年度:載入所有年度、有保固的專案,分「保固中」「完保」兩清單
+async function renderWarranty() {
+  const box = $("#content");
+  box.innerHTML = `<div class="state-msg">載入保固資料中…</div>`;
+  let all;
+  try {
+    all = await api("/projects");          // 不帶 year → 跨年度全部
+  } catch (e) {
+    box.innerHTML = `<div class="state-msg">${esc(e.message)}</div>`;
+    return;
+  }
+  // 僅取有保固年數且有履約迄日者;依團隊資料牆過濾 (後端已處理)
+  const withWty = all.map(p => ({ p, w: warrantyInfo(p) }))
+    .filter(x => x.w);
+  const active = withWty.filter(x => x.w.active)
+    .sort((a, b) => a.w.daysLeft - b.w.daysLeft);       // 快到期在前
+  const expired = withWty.filter(x => !x.w.active && x.w.end < utc(todayISO()))
+    .sort((a, b) => b.w.end - a.w.end);                 // 剛完保在前
+  // (尚未進入保固期者 (履約中) 不列入此表)
+
+  box.innerHTML = "";
+  const wrap = el("div");
+  const section = (title, items, cls) => {
+    wrap.append(el("div", { class: "wty-sec-h " + cls },
+      `${title}(${items.length})`));
+    if (!items.length) {
+      wrap.append(el("div", { class: "state-msg", style: "padding:14px" },
+        cls === "active" ? "目前沒有保固中的專案" : "目前沒有已完保的專案"));
+      return;
+    }
+    const rows = items.map(({ p, w }) => {
+      const label = w.active
+        ? (w.daysLeft <= 0 ? "已到期" : `剩餘 ${w.daysLeft} 天`)
+        : "已完保";
+      const urgent = w.active && w.daysLeft <= 90;
+      return el("tr", { class: "row", onclick: () => openModal(p) },
+        el("td", {}, String(p.year)),
+        el("td", { class: "name" }, p.name, ...subcontractLabels(p)),
+        el("td", {}, p.contract_no || "—"),
+        el("td", { class: "num" }, rocDate(p.end_date)),
+        el("td", { class: "num" }, `${p.warranty_years} 年`),
+        el("td", { class: "num" }, rocDate(w.endISO)),
+        el("td", {}, el("span", { class: "wty",
+          style: urgent ? "color:var(--red);border-color:var(--red)" : "" },
+          label)));
+    });
+    const hh = el("thead", {}, el("tr", {},
+      ...["年度", "案名", "契約號", "履約迄", "保固", "保固迄", "狀態"]
+        .map(h => el("th", {}, h))));
+    wrap.append(el("div", { class: "tbl-wrap" },
+      el("table", { style: "min-width:760px" }, hh, el("tbody", {}, ...rows))));
+  };
+  section("保固中", active, "active");
+  section("完保", expired, "expired");
+  box.append(wrap);
 }
 
 /* ============================== 甘特圖 ============================== */
