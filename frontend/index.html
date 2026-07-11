@@ -111,6 +111,7 @@ tr.grp td.grp-td{background:var(--panel2);text-align:left;font-weight:600;
 tr.grp td.grp-td.ongoing{color:var(--teal)}
 tr.grp td.grp-td.not_awarded{color:var(--amber)}
 tr.grp td.grp-td.closed{color:var(--gray)}
+tr.grp td.grp-td.warranty{color:var(--navy)}
 .scan{font-size:14px} .scan.none{color:var(--ink2)}
 .col-resizer{position:absolute;top:0;right:-4px;width:8px;height:100%;
   cursor:col-resize;z-index:5;touch-action:none}
@@ -228,7 +229,6 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
   <div class="view-toggle" role="tablist">
     <button id="vTable" class="active">總表</button>
     <button id="vGantt">甘特圖</button>
-    <button id="vWarranty">保固中</button>
     <button id="vUsers" style="display:none">權限設定</button>
     <button id="vNotify" style="display:none">訊息通知</button>
   </div>
@@ -734,13 +734,11 @@ $("#userChip").addEventListener("click", () => {
 });
 $("#vTable").addEventListener("click", () => setView("table"));
 $("#vGantt").addEventListener("click", () => setView("gantt"));
-$("#vWarranty").addEventListener("click", () => setView("warranty"));
 $("#vUsers").addEventListener("click", () => setView("users"));
 $("#vNotify").addEventListener("click", () => setView("notify"));
 function setView(v) {
   S.view = v;
   for (const [id, name] of [["#vTable","table"],["#vGantt","gantt"],
-                            ["#vWarranty","warranty"],
                             ["#vUsers","users"],["#vNotify","notify"]])
     $(id).classList.toggle("active", v === name);
   render();
@@ -807,27 +805,16 @@ const storedW = (key, def) => Number(localStorage.getItem(key)) || def;
 function render() {
   if (S.view === "users") return renderUsers();
   if (S.view === "notify") return renderNotify();
-  if (S.view === "warranty") return renderWarranty();
   if (!viewProjects().length) return renderTable();  // 空狀態訊息由 renderTable 處理
   if (S.view === "table") renderTable(); else renderGantt();
 }
 
-// 保固中清單:履約已迄、目前落在保固期內的專案
-function renderWarranty() {
-  const list = viewProjects().filter(p => {
-    const w = warrantyInfo(p);
-    return w && w.active;
-  });
-  renderTable(list, "warranty");
-}
-
-function renderTable(listArg, mode) {
-  const list = listArg || viewProjects();
+function renderTable() {
+  const list = viewProjects();
   if (!list.length) {
     $("#content").innerHTML =
       `<div class="state-msg">${
-        mode === "warranty" ? "目前沒有處於保固期內的專案"
-        : S.team === "none" ? "你尚未被指派任何團隊,無法檢視專案資料,請洽管理者。"
+        S.team === "none" ? "你尚未被指派任何團隊,無法檢視專案資料,請洽管理者。"
         : S.team != null ? "此團隊在本年度尚無專案"
         : "此年度尚無專案,點右上「＋ 新增專案」開始建立"}</div>`;
     return;
@@ -841,10 +828,23 @@ function renderTable(listArg, mode) {
         p.contract_scan
           ? el("span", { class: "scan ok", title: "已收到合約掃檔" }, "📄")
           : el("span", { class: "scan none", title: "尚未收到合約掃檔" }, "—")) },
-    { f: "name", h: "案名", cell: (p) => el("td", { class: "name" }, p.name,
-        ...(p.warranty_years ? [el("span", { class: "wty" },
-            `保固${p.warranty_years}年`)] : []),
-        ...subcontractLabels(p)) },
+    { f: "name", h: "案名", cell: (p) => {
+      const w = warrantyInfo(p);
+      const wtyChildren = [];
+      if (p.warranty_years) {
+        const inWty = w && w.active;
+        const txt = inWty
+          ? (w.daysLeft <= 0 ? `保固${p.warranty_years}年; 已到期`
+                             : `保固${p.warranty_years}年; 剩餘${w.daysLeft}天`)
+          : `保固${p.warranty_years}年`;
+        // 保固中且剩餘 90 天內:紅色提醒
+        const urgent = inWty && w.daysLeft <= 90;
+        wtyChildren.push(el("span", { class: "wty",
+          style: urgent ? "color:var(--red);border-color:var(--red)" : "" }, txt));
+      }
+      return el("td", { class: "name" }, p.name,
+        ...wtyChildren, ...subcontractLabels(p));
+    } },
     { f: "contract_no", h: "契約號", cell: (p) => el("td", {}, p.contract_no || "—") },
     { f: "so_number", h: "SO number", cell: (p) => el("td", {}, p.so_number || "—") },
     { f: "schedule", h: "履約起", cell: (p) => el("td", { class: "num" }, rocDate(p.start_date)) },
@@ -867,24 +867,6 @@ function renderTable(listArg, mode) {
     { f: "notes", h: "備註", cell: (p) => el("td", { class: "notes" }, p.notes || "") },
   ].filter(c => canSee(c.f));
 
-  // 保固中模式:在「工期」欄後插入保固期資訊欄 (保固起迄 + 剩餘天數)
-  if (mode === "warranty") {
-    const wCol = { f: "schedule", h: "保固期", cell: (p) => {
-      const w = warrantyInfo(p);
-      if (!w) return el("td", {}, "—");
-      const badge = el("span", { class: "wty",
-        style: w.daysLeft <= 90
-          ? "color:var(--red);border-color:var(--red)" : "" },
-        w.daysLeft <= 0 ? "已到期" : `剩 ${w.daysLeft} 天`);
-      return el("td", {},
-        `${rocDate(p.end_date)} ~ ${rocDate(w.endISO)}`, badge);
-    } };
-    // 找「工期」欄的位置,插在其後 (canSee(schedule) 為真時工期欄才在)
-    const durIdx = COLS.findIndex(c => c.h === "工期");
-    if (durIdx >= 0) COLS.splice(durIdx + 1, 0, wCol);
-    else COLS.push(wCol);
-  }
-
   const thead = el("thead", {}, el("tr", {}, ...COLS.map(c => {
     const th = el("th", {}, c.h);
     if (c.f === "name") {
@@ -897,11 +879,17 @@ function renderTable(listArg, mode) {
     return th;
   })));
 
-  // D.a 依狀態分組
-  const GROUPS = [["ongoing", "進行中"], ["not_awarded", "未成案"], ["closed", "已結案"]];
+  // D.a 依狀態分組;保固中 (履約已迄且在保固期內) 獨立一組排最後,
+  // 該組專案從原狀態組移走 (只出現一次)
+  const GROUPS = [["ongoing", "進行中"], ["not_awarded", "未成案"],
+                  ["closed", "已結案"], ["warranty", "保固中"]];
+  const groupOf = (p) => {
+    const w = warrantyInfo(p);
+    return (w && w.active) ? "warranty" : p.status;
+  };
   const tbody = el("tbody");
   for (const [st, label] of GROUPS) {
-    const rows = list.filter(p => p.status === st);
+    const rows = list.filter(p => groupOf(p) === st);
     if (!rows.length) continue;
     tbody.append(el("tr", { class: "grp" },
       el("td", { colspan: String(COLS.length), class: "grp-td " + st },
@@ -1184,6 +1172,8 @@ function ganttRange() {
   for (const p of dated) {
     lo = Math.min(lo, utc(p.start_date));
     hi = Math.max(hi, utc(p.end_date));
+    const w = warrantyInfo(p);           // 保固期延伸到履約迄日之後,納入範圍
+    if (w) hi = Math.max(hi, w.end);
   }
   // 對齊月界:起點退到當月1日,終點推到次月1日
   const a = new Date(lo), b = new Date(hi);
@@ -1241,6 +1231,23 @@ function renderGantt() {
     const op = p.status === "not_awarded" ? "0.4" : (p.status === "closed" ? "0.65" : "0.92");
     svg += `<g class="bar" data-id="${p.id}" data-vt="${p.viewing_team_id != null ? p.viewing_team_id : ''}" data-sub="${p.is_subcontract_view ? 1 : 0}" style="cursor:pointer">`;
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="${fill}" opacity="${op}"${dash}/>`;
+    // 保固期:從履約迄日延伸到保固迄日,以斜紋淺色條表示
+    const wty = warrantyInfo(p);
+    if (wty) {
+      const wx = X(utc(p.end_date)) + Math.round(px);   // 保固起 = 履約迄日隔天位置
+      const wxEnd = X(wty.end) + Math.round(px);
+      const ww = Math.max(wxEnd - wx, 3);
+      const wtyUrgent = wty.active && wty.daysLeft <= 90;
+      const wtyColor = wtyUrgent ? "var(--red)" : fill;
+      // 淺色底 + 斜紋,與履約條區隔;保固中且快到期用紅色
+      svg += `<rect x="${wx}" y="${y + 3}" width="${ww}" height="${h - 6}" rx="3"`
+           + ` fill="${wtyColor}" opacity="0.14"/>`;
+      svg += `<rect x="${wx}" y="${y + 3}" width="${ww}" height="${h - 6}" rx="3"`
+           + ` fill="none" stroke="${wtyColor}" stroke-width="1"`
+           + ` stroke-dasharray="3 2" opacity="0.7">`
+           + `<title>保固期 ${rocDate(p.end_date)} ~ ${rocDate(wty.endISO)}`
+           + `${wty.active ? (wty.daysLeft <= 0 ? " (已到期)" : ` (剩 ${wty.daysLeft} 天)`) : ""}</title></rect>`;
+    }
     if (w > 74 && !short)
       svg += `<text x="${x+8}" y="${y+15}" font-size="11" fill="#fff">${fmtDur(p.duration_days)}</text>`;
     if (p.kickoff_date) {
