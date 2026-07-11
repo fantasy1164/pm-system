@@ -1758,8 +1758,8 @@ function openModal(p) {
     const SHARED = new Set(["name", "year", "status", "contract_no", "part_no",
       "so_number", "start_date", "end_date", "kickoff_date", "warranty_years",
       "team_id", "contract_scan", "nda_date", "nda_scan",
-      "participants", "awarded_amount"]);   // 其他參與者、決標金額:分包唯讀
-    // 注意:notify_days_before (里程碑提醒天數) 分包可自行設定,不鎖
+      "awarded_amount"]);   // 決標金額:分包不可改 (且不顯示主包值)
+    // participants (其他參與者)、notify_days_before、備註、里程碑:分包各自獨立可編輯
     for (const [k, input] of Object.entries(f))
       if (SHARED.has(k)) input.disabled = true;
   }

@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS project_team_overrides (
     awarded_amount INTEGER,
     notes          TEXT NOT NULL DEFAULT '',
     notify_days_before INTEGER,       -- 分包獨立的里程碑提醒天數
+    participants   TEXT NOT NULL DEFAULT '',   -- 分包獨立的其他參與者
     PRIMARY KEY (project_id, team_id)
 );
 

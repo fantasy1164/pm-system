@@ -189,6 +189,7 @@ MIGRATIONS = [
     ("budget_allocations", "team_id", "INTEGER"),
     ("project_members", "team_id", "INTEGER"),
     ("project_team_overrides", "notify_days_before", "INTEGER"),
+    ("project_team_overrides", "participants", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -420,11 +421,14 @@ def fetch_project(db, pid, force_view=None):
     ).fetchall()
     members = fetch_members(db, pid, vteam)
     d = project_to_dict(row, budgets, ms, members)
-    # 分包視角:備註、提醒天數取該團隊 override (獨立);決標金額共享唯讀沿用主包值
+    # 分包視角:備註、提醒天數、其他參與者取該團隊 override (各自獨立);
+    # 決標金額分包不顯示主包值 (清空,不洩漏)
     if is_sub:
         ov = fetch_override(db, pid, vteam)
         d["notes"] = ov["notes"] if ov else ""
         d["notify_days_before"] = ov["notify_days_before"] if ov else None
+        d["participants"] = ov["participants"] if ov else ""
+        d["awarded_amount"] = None
     # 分包關係資訊 (供前端顯示 label)
     subs = subcontract_teams(db, pid)
     d["subcontract_to"] = subs                    # 主包視角:分包給誰
@@ -478,7 +482,8 @@ def viewing_team(db, pid, master_team_id):
 
 def fetch_override(db, pid, team_id):
     return db.execute(
-        "SELECT awarded_amount, notes, notify_days_before FROM project_team_overrides"
+        "SELECT awarded_amount, notes, notify_days_before, participants"
+        " FROM project_team_overrides"
         " WHERE project_id = ? AND team_id = ?", (pid, team_id)).fetchone()
 
 
@@ -486,7 +491,7 @@ _UNSET = object()   # 區分「未提供」與「明確設為 None」
 
 
 def upsert_override(db, pid, team_id, awarded_amount=None, notes=None,
-                    notify_days_before=_UNSET):
+                    notify_days_before=_UNSET, participants=_UNSET):
     cur = fetch_override(db, pid, team_id)
     aa = awarded_amount if awarded_amount is not None else (cur["awarded_amount"] if cur else None)
     nt = notes if notes is not None else (cur["notes"] if cur else "")
@@ -494,13 +499,18 @@ def upsert_override(db, pid, team_id, awarded_amount=None, notes=None,
         nd = cur["notify_days_before"] if cur else None
     else:
         nd = notify_days_before
+    if participants is _UNSET:
+        pt = cur["participants"] if cur else ""
+    else:
+        pt = participants or ""
     db.execute(
         "INSERT INTO project_team_overrides"
-        " (project_id, team_id, awarded_amount, notes, notify_days_before)"
-        " VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id, team_id)"
+        " (project_id, team_id, awarded_amount, notes, notify_days_before, participants)"
+        " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, team_id)"
         " DO UPDATE SET awarded_amount = excluded.awarded_amount,"
-        " notes = excluded.notes, notify_days_before = excluded.notify_days_before",
-        (pid, team_id, aa, nt, nd))
+        " notes = excluded.notes, notify_days_before = excluded.notify_days_before,"
+        " participants = excluded.participants",
+        (pid, team_id, aa, nt, nd, pt))
 # ================================================================
 
 
@@ -711,8 +721,9 @@ def update_project(pid):
         "name", "year", "status", "contract_no", "part_no", "so_number",
         "start_date", "end_date", "kickoff_date", "warranty_years",
         "contract_scan", "nda_date", "nda_scan", "team_id",
-        "participants", "awarded_amount")   # 其他參與者、決標金額:分包唯讀
-    # 注意:notify_days_before (里程碑通知提醒) 分包可自行設定,不在唯讀集合
+        "awarded_amount")   # 決標金額:分包不可改 (且不顯示主包值)
+    # participants (其他參與者)、notes、notify_days_before、里程碑、認列、成員:
+    # 分包各自獨立,不在唯讀集合
     if is_sub:
         for k in list(data.keys()):
             if k in SHARED_ONLY_FOR_MASTER:
@@ -729,17 +740,20 @@ def update_project(pid):
     changes = {
         f: [old[f], v] for f, v in fields.items() if old[f] != v
     }
-    # 分包視角:notes (備註)、notify_days_before (提醒天數) 寫入該團隊 override,
-    # 不動主包 projects (決標金額已改共享唯讀)
+    # 分包視角:備註、提醒天數、其他參與者 寫入該團隊 override (各自獨立),
+    # 不動主包 projects (決標金額分包不可改,前面已 pop)
     if is_sub:
         ov_notes = fields.pop("notes", "__none__")
         ov_nd = fields.pop("notify_days_before", "__none__")
-        if ov_notes != "__none__" or ov_nd != "__none__":
+        ov_pt = fields.pop("participants", "__none__")
+        if ov_notes != "__none__" or ov_nd != "__none__" or ov_pt != "__none__":
             kw = {}
             if ov_notes != "__none__":
                 kw["notes"] = ov_notes
             if ov_nd != "__none__":
                 kw["notify_days_before"] = ov_nd
+            if ov_pt != "__none__":
+                kw["participants"] = ov_pt
             upsert_override(db, pid, vteam, **kw)
             changes["override"] = ["(team)", vteam]
     if fields:
