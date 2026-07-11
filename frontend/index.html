@@ -446,10 +446,11 @@ function teamOptions() {   // 可切換的團隊清單 (null=全團隊;"none"=�
 }
 function viewProjects() {  // 依當前團隊過濾
   if (S.team === "none") return [];              // 未加入團隊 → 無專案
-  return S.team == null ? S.projects
-       : S.projects.filter(p =>
-           p.team_id === S.team                  // 主包團隊的專案
-           || (p.is_subcontract_view && p.viewing_team_id === S.team));  // 分包給我團隊
+  if (S.team == null) return S.projects;         // 全團隊 → 全部 (含雙棲兩筆)
+  return S.projects.filter(p =>
+    p.is_subcontract_view
+      ? p.viewing_team_id === S.team             // 分包視角那筆 → 歸分包團隊
+      : p.team_id === S.team);                    // 主包視角那筆 → 歸主包團隊
 }
 function renderTeamChip() {
   const c = $("#teamChip");
@@ -485,16 +486,18 @@ function projTeam(pid) {
   const p = (S.projects || []).find(x => x.id === pid);
   return p ? p.team_id : null;
 }
-function canEdit(pid) {
+function canEdit(pid, proj) {
   if (!S.auth.enabled) return true;
   if (!S.me) return false;
   if (S.me.editable === "all") return true;
-  const tid = projTeam(pid);
-  if (tid != null && S.me.editable.includes(tid)) return true;  // 主包團隊成員
-  // 分包:此案分包給我團隊 → 可編輯 (共享欄位由分包硬規則擋成唯讀)
-  const p = S.projects.find(x => x.id === pid);
-  return !!(p && p.is_subcontract_view
-    && (S.me.teams || []).some(m => m.team_id === p.viewing_team_id));
+  // 優先用傳入的視角物件 (雙棲使用者同一 id 有主包/分包兩筆,不可用 id 查找)
+  const p = proj || S.projects.find(x => x.id === pid);
+  const tid = p ? p.team_id : projTeam(pid);
+  // 分包視角:此案分包給我團隊 → 可編輯 (共享欄位由分包硬規則擋成唯讀)
+  if (p && p.is_subcontract_view)
+    return (S.me.teams || []).some(m => m.team_id === p.viewing_team_id);
+  // 主包視角:主包團隊成員可編輯
+  return tid != null && S.me.editable.includes(tid);
 }
 // 是否為該專案的專案經理 (管理者恆真;否則須在該專案團隊中角色為 pm)
 function isProjectPM(pid) {
@@ -1178,7 +1181,7 @@ function renderGantt() {
     const dash = p.status === "not_awarded"
       ? ` stroke="${fill}" stroke-width="1.5" stroke-dasharray="5 3"` : "";
     const op = p.status === "not_awarded" ? "0.4" : (p.status === "closed" ? "0.65" : "0.92");
-    svg += `<g class="bar" data-id="${p.id}" style="cursor:pointer">`;
+    svg += `<g class="bar" data-id="${p.id}" data-vt="${p.viewing_team_id != null ? p.viewing_team_id : ''}" data-sub="${p.is_subcontract_view ? 1 : 0}" style="cursor:pointer">`;
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="${fill}" opacity="${op}"${dash}/>`;
     if (w > 74 && !short)
       svg += `<text x="${x+8}" y="${y+15}" font-size="11" fill="#fff">${fmtDur(p.duration_days)}</text>`;
@@ -1274,7 +1277,11 @@ ${rocDate(m.date)}</title></path>`;
   scroll.addEventListener("click", (ev) => {
     const g = ev.target.closest("g.bar");
     if (!g) return;
-    const p = viewProjects().find(x => x.id === Number(g.dataset.id));
+    const gid = Number(g.dataset.id), gsub = g.dataset.sub === "1";
+    const gvt = g.dataset.vt === "" ? null : Number(g.dataset.vt);
+    const p = viewProjects().find(x => x.id === gid
+      && !!x.is_subcontract_view === gsub
+      && (x.viewing_team_id != null ? x.viewing_team_id : null) === gvt);
     if (p) openModal(p);
   });
 
@@ -1765,7 +1772,7 @@ function openModal(p) {
       memRows.forEach(r => { r.cb.disabled = true; r.noteIn.disabled = true; });
     }
   }
-  const editable = isNew ? canCreate() : canEdit(d.id);
+  const editable = isNew ? canCreate() : canEdit(d.id, d);
   // 若某分組區塊內所有欄位都因權限不可見,則隱藏整個區塊 (避免空卡片)
   frm.querySelectorAll(".fsec").forEach(sec => {
     const labels = [...sec.querySelectorAll("label")];

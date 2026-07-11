@@ -398,14 +398,16 @@ def upsert_members(db, project_id, members, team_id):
                    (project_id, team_id, m["user_id"], m["note"]))
 
 
-def fetch_project(db, pid):
+def fetch_project(db, pid, force_view=None):
     row = db.execute(
         "SELECT * FROM projects WHERE id = ? AND deleted = 0", (pid,)
     ).fetchone()
     if row is None:
         return None
     master_team = row["team_id"]
-    vteam, is_sub = viewing_team(db, pid, master_team)
+    # force_view=(team_id, is_sub):指定視角 (供雙棲使用者拆兩筆);否則自動判定
+    vteam, is_sub = force_view if force_view is not None \
+        else viewing_team(db, pid, master_team)
     # 獨立欄位 (認列/里程碑/成員) 取「視角團隊」那組
     budgets = db.execute(
         "SELECT year, amount FROM budget_allocations"
@@ -575,13 +577,36 @@ def list_projects():
         args.append(year)
     sql += " ORDER BY (start_date IS NULL), start_date, id"
     rows = db.execute(sql, args).fetchall()
-    # 逐案用視角組合 (共享唯讀 + 該團隊獨立欄位),並套欄位可見性
+    # 逐案用視角組合;若使用者對同一案身兼主包+分包成員,拆成兩筆
+    # (主包視角=分包TO、分包視角=分包FROM),因兩邊獨立資料各自呈現
     out = []
     for r in rows:
-        d = fetch_project(db, r["id"])
-        if d is not None:
-            out.append(strip_invisible(d, db))
+        for view in project_views_for_user(db, r["id"], r["team_id"]):
+            d = fetch_project(db, r["id"], force_view=view)
+            if d is not None:
+                out.append(strip_invisible(d, db))
     return jsonify(out)
+
+
+def project_views_for_user(db, pid, master_team):
+    """回傳使用者對此案應呈現的視角清單 [(team_id, is_sub), ...]。
+    - 管理者/開發模式:單一主包視角
+    - 一般使用者:是主包成員→主包視角;是 active 分包團隊成員→各分包視角
+      (雙棲者兩者皆有,故可能回傳多筆)"""
+    u = getattr(g, "user", None)
+    if u is None or u["role"] == "admin":
+        return [(master_team, False)]
+    my_teams = {r["team_id"] for r in db.execute(
+        "SELECT team_id FROM team_members WHERE user_id = ?", (u["id"],))}
+    views = []
+    if master_team in my_teams:
+        views.append((master_team, False))          # 主包視角
+    for st in subcontract_teams(db, pid):
+        if st in my_teams:
+            views.append((st, True))                # 各分包視角
+    if not views:
+        views.append((master_team, False))          # 理論上被資料牆擋,保底
+    return views
 
 
 @app.get("/api/projects/<int:pid>")
