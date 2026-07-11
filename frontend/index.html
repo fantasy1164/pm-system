@@ -107,7 +107,12 @@ tfoot td{position:sticky;bottom:0;background:var(--foot);
   border:1px solid var(--thead-line);border-top-width:2px;font-weight:700}
 tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
 tr.grp td.grp-td{background:var(--panel2);text-align:left;font-weight:600;
-  color:var(--ink2);padding:6px 10px;border:1px solid var(--line)}
+  color:var(--ink2);padding:6px 10px;border:1px solid var(--line);
+  cursor:grab;user-select:none}
+tr.grp td.grp-td::before{content:"⣿";color:var(--gray);
+  margin-right:8px;font-size:11px;letter-spacing:-2px;opacity:0.55}
+tr.grp.grp-dragging{opacity:0.4}
+tr.grp.grp-drop-target td.grp-td{box-shadow:inset 0 3px 0 var(--teal)}
 tr.grp td.grp-td.ongoing{color:var(--teal)}
 tr.grp td.grp-td.not_awarded{color:var(--amber)}
 tr.grp td.grp-td.closed{color:var(--gray)}
@@ -801,6 +806,61 @@ function colResizer(opts) {
 }
 const storedW = (key, def) => Number(localStorage.getItem(key)) || def;
 
+// 分組顯示順序 (可拖拉調整,存 localStorage);回傳 status key 陣列
+const GROUP_KEYS = ["ongoing", "not_awarded", "closed", "warranty"];
+function groupOrder() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("pm_group_order") || "null");
+    if (Array.isArray(saved)) {
+      // 保留有效鍵 + 補上任何新增的鍵 (向後相容)
+      const valid = saved.filter(k => GROUP_KEYS.includes(k));
+      for (const k of GROUP_KEYS) if (!valid.includes(k)) valid.push(k);
+      return valid;
+    }
+  } catch (_e) { /* fall through */ }
+  return [...GROUP_KEYS];
+}
+function saveGroupOrder(order) {
+  localStorage.setItem("pm_group_order", JSON.stringify(order));
+}
+
+let _dragGroup = null;   // 目前拖曳中的分組 key
+function attachGroupDrag(tr, st) {
+  tr.addEventListener("dragstart", (e) => {
+    _dragGroup = st;
+    tr.classList.add("grp-dragging");
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", st); } catch (_e) {}
+  });
+  tr.addEventListener("dragend", () => {
+    _dragGroup = null;
+    tr.classList.remove("grp-dragging");
+    document.querySelectorAll(".grp-drop-target")
+      .forEach(x => x.classList.remove("grp-drop-target"));
+  });
+  tr.addEventListener("dragover", (e) => {
+    if (_dragGroup && _dragGroup !== st) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      tr.classList.add("grp-drop-target");
+    }
+  });
+  tr.addEventListener("dragleave", () => tr.classList.remove("grp-drop-target"));
+  tr.addEventListener("drop", (e) => {
+    e.preventDefault();
+    tr.classList.remove("grp-drop-target");
+    if (!_dragGroup || _dragGroup === st) return;
+    const order = groupOrder();
+    const from = order.indexOf(_dragGroup);
+    if (from < 0) return;
+    order.splice(from, 1);                      // 先移除拖曳的分組
+    const to = order.indexOf(st);               // 再找目標現在的位置
+    order.splice(to < 0 ? order.length : to, 0, _dragGroup);  // 插在目標前面
+    saveGroupOrder(order);
+    render();                                   // 重繪套用新順序
+  });
+}
+
 /* ============================== 總表 ============================== */
 function render() {
   if (S.view === "users") return renderUsers();
@@ -880,20 +940,25 @@ function renderTable() {
   })));
 
   // D.a 依狀態分組;保固中 (履約已迄且在保固期內) 獨立一組排最後,
-  // 該組專案從原狀態組移走 (只出現一次)
-  const GROUPS = [["ongoing", "進行中"], ["not_awarded", "未成案"],
-                  ["closed", "已結案"], ["warranty", "保固中"]];
+  // 該組專案從原狀態組移走 (只出現一次)。分組順序可拖拉調整 (存 localStorage)
+  const LABELS = { ongoing: "進行中", not_awarded: "未成案",
+                   closed: "已結案", warranty: "保固中" };
   const groupOf = (p) => {
     const w = warrantyInfo(p);
     return (w && w.active) ? "warranty" : p.status;
   };
   const tbody = el("tbody");
-  for (const [st, label] of GROUPS) {
+  const order = groupOrder();
+  for (const st of order) {
+    const label = LABELS[st];
     const rows = list.filter(p => groupOf(p) === st);
     if (!rows.length) continue;
-    tbody.append(el("tr", { class: "grp" },
-      el("td", { colspan: String(COLS.length), class: "grp-td " + st },
-        `${label}(${rows.length})`)));
+    const grpTd = el("td", { colspan: String(COLS.length),
+      class: "grp-td " + st }, `${label}(${rows.length})`);
+    const grpTr = el("tr", { class: "grp", draggable: "true" }, grpTd);
+    grpTr.dataset.group = st;
+    attachGroupDrag(grpTr, st);
+    tbody.append(grpTr);
     for (const p of rows)
       tbody.append(el("tr", { class: "row", onclick: () => openModal(p) },
         ...COLS.map(c => c.cell(p))));
@@ -1231,7 +1296,8 @@ function renderGantt() {
     const op = p.status === "not_awarded" ? "0.4" : (p.status === "closed" ? "0.65" : "0.92");
     svg += `<g class="bar" data-id="${p.id}" data-vt="${p.viewing_team_id != null ? p.viewing_team_id : ''}" data-sub="${p.is_subcontract_view ? 1 : 0}" style="cursor:pointer">`;
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="${fill}" opacity="${op}"${dash}/>`;
-    // 保固期:從履約迄日延伸到保固迄日,以斜紋淺色條表示
+    // 保固期:從履約迄日延伸到保固迄日,以「同色實心淺色塊」表示,
+    // 像履約條淡出的尾巴 (右側圓角);與未成案的虛線外框明顯區隔
     const wty = warrantyInfo(p);
     if (wty) {
       const wx = X(utc(p.end_date)) + Math.round(px);   // 保固起 = 履約迄日隔天位置
@@ -1239,14 +1305,13 @@ function renderGantt() {
       const ww = Math.max(wxEnd - wx, 3);
       const wtyUrgent = wty.active && wty.daysLeft <= 90;
       const wtyColor = wtyUrgent ? "var(--red)" : fill;
-      // 淺色底 + 斜紋,與履約條區隔;保固中且快到期用紅色
-      svg += `<rect x="${wx}" y="${y + 3}" width="${ww}" height="${h - 6}" rx="3"`
-           + ` fill="${wtyColor}" opacity="0.14"/>`;
-      svg += `<rect x="${wx}" y="${y + 3}" width="${ww}" height="${h - 6}" rx="3"`
-           + ` fill="none" stroke="${wtyColor}" stroke-width="1"`
-           + ` stroke-dasharray="3 2" opacity="0.7">`
-           + `<title>保固期 ${rocDate(p.end_date)} ~ ${rocDate(wty.endISO)}`
-           + `${wty.active ? (wty.daysLeft <= 0 ? " (已到期)" : ` (剩 ${wty.daysLeft} 天)`) : ""}</title></rect>`;
+      const title = `<title>保固期 ${rocDate(p.end_date)} ~ ${rocDate(wty.endISO)}`
+        + `${wty.active ? (wty.daysLeft <= 0 ? " (已到期)" : ` (剩 ${wty.daysLeft} 天)`) : ""}</title>`;
+      // 實心淺色塊 (低透明度),接在履約條尾端,像履約條的延伸尾巴
+      svg += `<path d="M ${wx} ${y} H ${wx + ww - 5} `
+           + `Q ${wx + ww} ${y} ${wx + ww} ${y + 5} `
+           + `V ${y + h - 5} Q ${wx + ww} ${y + h} ${wx + ww - 5} ${y + h} `
+           + `H ${wx} Z" fill="${wtyColor}" opacity="0.22">${title}</path>`;
     }
     if (w > 74 && !short)
       svg += `<text x="${x+8}" y="${y+15}" font-size="11" fill="#fff">${fmtDur(p.duration_days)}</text>`;
