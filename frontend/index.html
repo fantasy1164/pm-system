@@ -331,6 +331,18 @@ const el = (tag, attrs = {}, ...kids) => {
   return n;
 };
 const fmtAmt = (n) => (n == null || n === "" ? "—" : Number(n).toLocaleString("zh-TW"));
+// 後端 created_at 為伺服器 UTC 時間 (格式 "YYYY-MM-DD HH:MM:SS",無時區標記);
+// 依瀏覽器時區轉換顯示。無法解析時原樣回傳。
+function fmtLocalTime(s) {
+  if (!s) return "";
+  // 已含 T/Z 直接解析;否則視為 UTC 補上標記
+  const iso = /[TZ]/.test(s) ? s : s.replace(" ", "T") + "Z";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return s;
+  const p = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+       + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 // 二态是/否 toggle button;回传 {el, get, set, onchange, setDisabled}
 function makeToggle(on, labels = ["是", "否"], colors = ["var(--teal)", "var(--ink2)"]) {
   let state = !!on, disabled = false, handler = null;
@@ -961,7 +973,7 @@ async function renderNotifySystem(body) {
   const hb = el("tbody");
   for (const n of history) {
     hb.append(el("tr", {},
-      el("td", {}, n.created_at),
+      el("td", {}, fmtLocalTime(n.created_at)),
       el("td", {}, TYLBL[n.ntype] || n.ntype),
       el("td", { style: "text-align:left" }, n.subject),
       el("td", { style: "text-align:left;font-size:12px" }, n.recipients || "—"),
@@ -1092,7 +1104,7 @@ async function renderNotifyProject(rootBody) {
     const hb = el("tbody");
     for (const n of history) {
       hb.append(el("tr", {},
-        el("td", {}, n.created_at),
+        el("td", {}, fmtLocalTime(n.created_at)),
         el("td", {}, (types.types.find(t => t.key === n.ntype) || {}).label || n.ntype),
         el("td", { style: "text-align:left" }, n.subject),
         el("td", { style: "text-align:left;font-size:12px" }, n.recipients || "—"),
@@ -1745,7 +1757,9 @@ function openModal(p) {
   if (d.is_subcontract_view) {
     const SHARED = new Set(["name", "year", "status", "contract_no", "part_no",
       "so_number", "start_date", "end_date", "kickoff_date", "warranty_years",
-      "team_id", "contract_scan", "nda_date", "nda_scan", "notify_days_before"]);
+      "team_id", "contract_scan", "nda_date", "nda_scan",
+      "participants", "awarded_amount"]);   // 其他參與者、決標金額:分包唯讀
+    // 注意:notify_days_before (里程碑提醒天數) 分包可自行設定,不鎖
     for (const [k, input] of Object.entries(f))
       if (SHARED.has(k)) input.disabled = true;
   }

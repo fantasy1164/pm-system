@@ -188,6 +188,7 @@ MIGRATIONS = [
     ("milestones", "team_id", "INTEGER"),
     ("budget_allocations", "team_id", "INTEGER"),
     ("project_members", "team_id", "INTEGER"),
+    ("project_team_overrides", "notify_days_before", "INTEGER"),
 ]
 
 
@@ -419,11 +420,11 @@ def fetch_project(db, pid, force_view=None):
     ).fetchall()
     members = fetch_members(db, pid, vteam)
     d = project_to_dict(row, budgets, ms, members)
-    # 分包視角:決標金額/備註取該團隊 override (預設空),不洩漏主包值
+    # 分包視角:備註、提醒天數取該團隊 override (獨立);決標金額共享唯讀沿用主包值
     if is_sub:
         ov = fetch_override(db, pid, vteam)
-        d["awarded_amount"] = ov["awarded_amount"] if ov else None
         d["notes"] = ov["notes"] if ov else ""
+        d["notify_days_before"] = ov["notify_days_before"] if ov else None
     # 分包關係資訊 (供前端顯示 label)
     subs = subcontract_teams(db, pid)
     d["subcontract_to"] = subs                    # 主包視角:分包給誰
@@ -477,19 +478,29 @@ def viewing_team(db, pid, master_team_id):
 
 def fetch_override(db, pid, team_id):
     return db.execute(
-        "SELECT awarded_amount, notes FROM project_team_overrides"
+        "SELECT awarded_amount, notes, notify_days_before FROM project_team_overrides"
         " WHERE project_id = ? AND team_id = ?", (pid, team_id)).fetchone()
 
 
-def upsert_override(db, pid, team_id, awarded_amount=None, notes=None):
+_UNSET = object()   # 區分「未提供」與「明確設為 None」
+
+
+def upsert_override(db, pid, team_id, awarded_amount=None, notes=None,
+                    notify_days_before=_UNSET):
     cur = fetch_override(db, pid, team_id)
     aa = awarded_amount if awarded_amount is not None else (cur["awarded_amount"] if cur else None)
     nt = notes if notes is not None else (cur["notes"] if cur else "")
+    if notify_days_before is _UNSET:
+        nd = cur["notify_days_before"] if cur else None
+    else:
+        nd = notify_days_before
     db.execute(
-        "INSERT INTO project_team_overrides (project_id, team_id, awarded_amount, notes)"
-        " VALUES (?, ?, ?, ?) ON CONFLICT(project_id, team_id)"
-        " DO UPDATE SET awarded_amount = excluded.awarded_amount, notes = excluded.notes",
-        (pid, team_id, aa, nt))
+        "INSERT INTO project_team_overrides"
+        " (project_id, team_id, awarded_amount, notes, notify_days_before)"
+        " VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id, team_id)"
+        " DO UPDATE SET awarded_amount = excluded.awarded_amount,"
+        " notes = excluded.notes, notify_days_before = excluded.notify_days_before",
+        (pid, team_id, aa, nt, nd))
 # ================================================================
 
 
@@ -699,7 +710,9 @@ def update_project(pid):
     SHARED_ONLY_FOR_MASTER = (   # 這些共享欄位分包不可改
         "name", "year", "status", "contract_no", "part_no", "so_number",
         "start_date", "end_date", "kickoff_date", "warranty_years",
-        "contract_scan", "nda_date", "nda_scan", "team_id", "notify_days_before")
+        "contract_scan", "nda_date", "nda_scan", "team_id",
+        "participants", "awarded_amount")   # 其他參與者、決標金額:分包唯讀
+    # 注意:notify_days_before (里程碑通知提醒) 分包可自行設定,不在唯讀集合
     if is_sub:
         for k in list(data.keys()):
             if k in SHARED_ONLY_FOR_MASTER:
@@ -716,14 +729,18 @@ def update_project(pid):
     changes = {
         f: [old[f], v] for f, v in fields.items() if old[f] != v
     }
-    # 分包視角:awarded_amount / notes 寫入該團隊 override,不動主包 projects
+    # 分包視角:notes (備註)、notify_days_before (提醒天數) 寫入該團隊 override,
+    # 不動主包 projects (決標金額已改共享唯讀)
     if is_sub:
-        ov_amount = fields.pop("awarded_amount", "__none__")
         ov_notes = fields.pop("notes", "__none__")
-        if ov_amount != "__none__" or ov_notes != "__none__":
-            upsert_override(db, pid, vteam,
-                awarded_amount=(None if ov_amount == "__none__" else ov_amount),
-                notes=(None if ov_notes == "__none__" else ov_notes))
+        ov_nd = fields.pop("notify_days_before", "__none__")
+        if ov_notes != "__none__" or ov_nd != "__none__":
+            kw = {}
+            if ov_notes != "__none__":
+                kw["notes"] = ov_notes
+            if ov_nd != "__none__":
+                kw["notify_days_before"] = ov_nd
+            upsert_override(db, pid, vteam, **kw)
             changes["override"] = ["(team)", vteam]
     if fields:
         sets = ", ".join(f"{f} = ?" for f in fields)
@@ -1230,32 +1247,61 @@ def resolve_recipients(db, team_id, ntype):
 
 
 def scan_milestone_due(db, today):
-    """回傳待發通知 [{dedup_key, project_id, subject, body, team_id, recipients}]"""
+    """回傳待發通知 [{dedup_key, project_id, subject, body, team_id, recipients}]
+    - 主包里程碑 (team_id=主包):用主包 notify_days_before,發給主包+所有 active 分包團隊
+    - 分包里程碑 (team_id=分包):用該分包 override 的 notify_days_before,只發該分包團隊"""
     out = []
-    rows = db.execute(
-        "SELECT p.id, p.name, p.team_id, p.notify_days_before, p.year"
-        " FROM projects p WHERE p.deleted = 0 AND p.team_id IS NOT NULL"
-        " AND p.notify_days_before IS NOT NULL").fetchall()
-    for p in rows:
-        for m in db.execute(
-                "SELECT date, name FROM milestones WHERE project_id = ?",
-                (p["id"],)):
-            due = parse_iso(m["date"])
-            if due is None:
+    projs = db.execute(
+        "SELECT id, name, team_id, notify_days_before, year"
+        " FROM projects WHERE deleted = 0 AND team_id IS NOT NULL").fetchall()
+
+    def emit(p, m, lead, team_ids_to_notify, tag):
+        due_txt = m["date"]
+        for tid in team_ids_to_notify:
+            recipients = resolve_recipients(db, tid, "milestone_due")
+            if not recipients:
                 continue
-            lead = (due - today).days
-            if lead != p["notify_days_before"]:
-                continue                    # 只在「剛好提前 N 天」那天發,發一次
-            recipients = resolve_recipients(db, p["team_id"], "milestone_due")
-            dedup = f"milestone_due:{p['id']}:{m['date']}:{m['name']}"
-            subject = f"[專案提醒] {p['name']} 里程碑「{m['name']}」將於 {lead} 天後到期"
+            dedup = f"milestone_due:{p['id']}:{tid}:{m['date']}:{m['name']}"
+            subject = f"[專案提醒] {p['name']} {tag}里程碑「{m['name']}」將於 {lead} 天後到期"
             body = (f"專案:{p['name']}\n"
-                    f"里程碑:{m['name']}\n"
-                    f"到期日:{m['date']} (民國 {roc_str(m['date'])})\n"
+                    f"里程碑:{tag}{m['name']}\n"
+                    f"到期日:{due_txt} (民國 {roc_str(m['date'])})\n"
                     f"距今:{lead} 天\n")
             out.append({"dedup_key": dedup, "project_id": p["id"],
                         "subject": subject, "body": body,
-                        "team_id": p["team_id"], "recipients": recipients})
+                        "team_id": tid, "recipients": recipients})
+
+    for p in projs:
+        master = p["team_id"]
+        subs = subcontract_teams(db, p["id"])       # active 分包團隊
+        # --- 主包里程碑 ---
+        if p["notify_days_before"] is not None:
+            for m in db.execute(
+                    "SELECT date, name FROM milestones"
+                    " WHERE project_id = ? AND team_id IS ?", (p["id"], master)):
+                due = parse_iso(m["date"])
+                if due is None:
+                    continue
+                lead = (due - today).days
+                if lead != p["notify_days_before"]:
+                    continue
+                emit(p, m, lead, [master] + subs, "")   # 主包+所有分包團隊
+        # --- 各分包里程碑 ---
+        for st in subs:
+            ov = fetch_override(db, p["id"], st)
+            nd = ov["notify_days_before"] if ov else None
+            if nd is None:
+                continue
+            for m in db.execute(
+                    "SELECT date, name FROM milestones"
+                    " WHERE project_id = ? AND team_id IS ?", (p["id"], st)):
+                due = parse_iso(m["date"])
+                if due is None:
+                    continue
+                lead = (due - today).days
+                if lead != nd:
+                    continue
+                emit(p, m, lead, [st], "[分包] ")         # 只發該分包團隊
     return out
 
 

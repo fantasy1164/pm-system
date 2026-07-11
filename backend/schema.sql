@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS project_team_overrides (
     team_id        INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
     awarded_amount INTEGER,
     notes          TEXT NOT NULL DEFAULT '',
+    notify_days_before INTEGER,       -- 分包獨立的里程碑提醒天數
     PRIMARY KEY (project_id, team_id)
 );
 
