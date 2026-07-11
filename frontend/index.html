@@ -103,9 +103,13 @@ td.num{font-variant-numeric:tabular-nums}
 .yc0{--yc:var(--yc0)} .yc1{--yc:var(--yc1)} .yc2{--yc:var(--yc2)}
 .yc3{--yc:var(--yc3)} .yc4{--yc:var(--yc4)} .yc5{--yc:var(--yc5)}
 .budget-chip.cur{box-shadow:0 0 0 2px color-mix(in srgb, var(--yc) 35%, transparent)}
-tfoot td{position:sticky;bottom:0;background:var(--foot);
-  border:1px solid var(--thead-line);border-top-width:2px;font-weight:700}
-tfoot td.lbl{text-align:right;color:var(--ink2);font-weight:500}
+tfoot td{position:sticky;bottom:0;background:var(--panel2);
+  border:none;border-top:2px solid var(--line);font-weight:700;
+  padding:9px 10px}
+tfoot td.lbl{text-align:right;color:var(--navy);font-weight:600;
+  letter-spacing:.02em}
+tfoot tr td:first-child{border-bottom-left-radius:8px}
+tfoot tr td:last-child{border-bottom-right-radius:8px}
 tr.grp td.grp-td{background:var(--panel2);text-align:left;font-weight:600;
   color:var(--ink2);padding:6px 10px;border:1px solid var(--line);
   cursor:grab;user-select:none}
@@ -982,30 +986,36 @@ function renderTable() {
   }
 
   // 小計 (依可見欄位動態對位)
-  const awardedSum = list.reduce((s, p) => s + (p.awarded_amount ?? 0), 0);
-  const byYear = {};
-  for (const p of list)
-    for (const b of (p.budgets || []))
-      byYear[b.year] = (byYear[b.year] || 0) + (b.amount || 0);
-  const firstTotal = COLS.findIndex(c => c.key === "awarded" || c.key === "budgets");
-  const cells = [];
-  if (firstTotal > 0)
-    cells.push(el("td", { class: "lbl", colspan: String(firstTotal) },
-      `小計(${list.length} 案)`));
-  for (let i = Math.max(firstTotal, 0); i < COLS.length; i++) {
-    const c = COLS[i];
-    if (c.key === "awarded") cells.push(el("td", { class: "num" }, fmtAmt(awardedSum)));
-    else if (c.key === "budgets") cells.push(el("td", {},
-      ...Object.keys(byYear).map(Number).sort().map(y =>
-        el("span", { class: `budget-chip yc${y % 6}` + (y === S.year ? " cur" : "") },
-          el("span", { class: "by" }, String(y)),
-          el("span", { class: "ba" }, fmtAmt(byYear[y]))))));
-    else cells.push(el("td", {}));
+  // 需求1:決標金額與預估認列金額皆不可見時,小計無意義,整列不顯示
+  const showAwarded = COLS.some(c => c.key === "awarded");
+  const showBudgets = COLS.some(c => c.key === "budgets");
+  let tfoot = null;
+  if (showAwarded || showBudgets) {
+    const awardedSum = list.reduce((s, p) => s + (p.awarded_amount ?? 0), 0);
+    const byYear = {};
+    for (const p of list)
+      for (const b of (p.budgets || []))
+        byYear[b.year] = (byYear[b.year] || 0) + (b.amount || 0);
+    const firstTotal = COLS.findIndex(c => c.key === "awarded" || c.key === "budgets");
+    const cells = [];
+    if (firstTotal > 0)
+      cells.push(el("td", { class: "lbl", colspan: String(firstTotal) },
+        `小計(${list.length} 案)`));
+    for (let i = Math.max(firstTotal, 0); i < COLS.length; i++) {
+      const c = COLS[i];
+      if (c.key === "awarded") cells.push(el("td", { class: "num" }, fmtAmt(awardedSum)));
+      else if (c.key === "budgets") cells.push(el("td", {},
+        ...Object.keys(byYear).map(Number).sort().map(y =>
+          el("span", { class: `budget-chip yc${y % 6}` + (y === S.year ? " cur" : "") },
+            el("span", { class: "by" }, String(y)),
+            el("span", { class: "ba" }, fmtAmt(byYear[y]))))));
+      else cells.push(el("td", {}));
+    }
+    tfoot = el("tfoot", {}, el("tr", {}, ...cells));
   }
-  const tfoot = el("tfoot", {}, el("tr", {}, ...cells));
 
   const wrap = el("div", { class: "tbl-wrap" },
-    el("table", {}, thead, tbody, tfoot));
+    el("table", {}, thead, tbody, ...(tfoot ? [tfoot] : [])));
   $("#content").replaceChildren(wrap);
 }
 
