@@ -4,12 +4,16 @@
 本階段尚未啟用登入,所有寫入操作以 request header `X-User` 記入 audit log,
 未帶則記為 local-dev。第四階段會以 JWT 取代。
 """
+import hmac
 import json
 import os
 import sqlite3
 from datetime import date, datetime
 
 from flask import Flask, g, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import auth_core
 import persistence
@@ -20,6 +24,23 @@ SCHEMA_PATH = os.path.join(BASE_DIR, "schema.sql")
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
+
+# Render 前面有一層反向代理,真實用戶端 IP 在 X-Forwarded-For。
+# 不套 ProxyFix 的話 request.remote_addr 會是代理 IP,導致所有使用者
+# 被限流器視為同一來源而互相拖累。x_for=1 = 信任一層代理 (Render 標準)。
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
+# 速率限制:預設每 IP 每分鐘上限,擋一般性濫用/DoS;登入類端點另加嚴格限制
+# (見各端點的 @limiter.limit)。單 worker,記憶體儲存;instance 靠定時 ping
+# 保溫平常不重啟、計數穩定,redeploy/重啟時計數歸零 (可接受)。
+# health 端點豁免 (保溫 ping 與前端喚醒輪詢會頻繁打它)。
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["240 per minute"],
+    storage_uri="memory://",
+    strategy="fixed-window",
+)
 
 BACKUP = persistence.BackupManager(DB_PATH)
 _started = False
@@ -540,8 +561,10 @@ def add_cors(resp):
     #   https://xxx.github.io,http://localhost:8000
     # 回應時回傳「與請求相符的那一個」;CORS 只是瀏覽器端防線,
     # 真正的存取控制在 JWT,允許 localhost 不影響安全性
+    # 預設空:未設定 PM_CORS_ORIGIN 時「不發 Allow-Origin」(瀏覽器擋跨域),
+    # 而非自動全開。要全開需主動設 PM_CORS_ORIGIN=* (本機測試用)。
     allowed = [o.strip() for o in
-               os.environ.get("PM_CORS_ORIGIN", "*").split(",") if o.strip()]
+               os.environ.get("PM_CORS_ORIGIN", "").split(",") if o.strip()]
     origin = request.headers.get("Origin", "")
     if "*" in allowed:
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -575,6 +598,7 @@ def readiness_gate():
 
 # ------------------------------------------------------------------- routes
 @app.get("/api/health")
+@limiter.exempt
 def health():
     ready = persistence.STATE["phase"] == "ready"
     body = {"status": "ok" if ready else persistence.STATE["phase"],
@@ -1031,6 +1055,7 @@ def _me_payload(db, user):
 
 
 @app.post("/api/auth/google")
+@limiter.limit("10 per minute; 40 per hour")
 def auth_google():
     if not auth_core.AUTH_ENABLED:
         return jsonify({"error": "登入功能未啟用"}), 400
@@ -1098,6 +1123,7 @@ def auth_google():
 
 
 @app.post("/api/auth/register")
+@limiter.limit("10 per minute; 40 per hour")
 def auth_register():
     """完成注册:验证注册凭证 + 补充的公司信箱/姓名,建立 pending 帐号,
     并即时发出「注册申请提醒」给申请人与管理者。"""
@@ -1512,7 +1538,9 @@ def notify_run():
     token = os.environ.get("PM_NOTIFY_TOKEN", "")
     given = request.headers.get("X-Notify-Token", "")
     is_admin_user = getattr(g, "user", None) and g.user["role"] == "admin"
-    if not is_admin_user and (not token or given != token):
+    # 常數時間比較,消除 token 比對的 timing side-channel
+    token_ok = bool(token) and hmac.compare_digest(given, token)
+    if not is_admin_user and not token_ok:
         return jsonify({"error": "unauthorized"}), 401
     db = get_db()
     # force=1 (立即掃描) 無視節流;否則依系統設定的頻率節流
@@ -1864,4 +1892,7 @@ def list_audit():
 
 if __name__ == "__main__":
     startup()
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    # debug 預設關;本機要熱重載/除錯設 PM_DEBUG=1 再跑。
+    # 絕不可在對外環境開啟 (Werkzeug debugger 會暴露互動式 RCE console)。
+    app.run(host="127.0.0.1", port=5000,
+            debug=os.environ.get("PM_DEBUG") == "1")
