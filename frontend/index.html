@@ -616,7 +616,10 @@ async function onGoogleCred(resp) {
       renderRegisterForm(d);   // 新使用者:补充公司信箱+姓名
     } else if (r.ok) {
       setTok(d.token);
-      S.me = { user: d.user, editable: d.editable };
+      // 使用完整登入回應設定 S.me (含 teams/editable/my_levels 等);
+      // 過去只取 user+editable 漏了 teams,導致首次登入誤判「未指派團隊」
+      const { token: _t, ...me } = d;
+      S.me = me;
       enterApp();
     } else if (d.code === "pending") {
       $("#content").innerHTML =
