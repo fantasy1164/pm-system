@@ -1633,6 +1633,30 @@ def create_team():
     return jsonify({"id": cur.lastrowid, "name": name}), 201
 
 
+@app.put("/api/teams/<int:tid>")
+@ADMIN
+def rename_team(tid):
+    """團隊更名 (僅管理者)。所有關聯 (專案/成員/分包/通知) 皆以 team_id
+    連結,更名不影響任何既有資料,僅顯示名稱改變。"""
+    name = ((request.get_json(silent=True) or {}).get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "團隊名稱為必填"}), 400
+    db = get_db()
+    row = db.execute("SELECT * FROM teams WHERE id = ?", (tid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "找不到團隊"}), 404
+    dup = db.execute("SELECT 1 FROM teams WHERE name = ? AND id != ?",
+                     (name, tid)).fetchone()
+    if dup:
+        return jsonify({"error": "團隊名稱已存在"}), 400
+    db.execute("UPDATE teams SET name = ? WHERE id = ?", (name, tid))
+    write_audit(db, "update", "teams", tid,
+                {"name": [row["name"], name]})
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify({"id": tid, "name": name})
+
+
 @app.delete("/api/teams/<int:tid>")
 @ADMIN
 def delete_team(tid):

@@ -1575,7 +1575,19 @@ async function renderUsers() {
     teamBar.append(el("span", { class: "badge",
       style: `font-size:13px;padding:3px 10px;border:1.5px solid ${col};`
         + `color:${col};background:color-mix(in srgb, ${col} 12%, transparent)` },
-      tm.name, el("button", { style: "border:0;background:none;color:var(--red);margin-left:5px;cursor:pointer",
+      tm.name,
+      el("button", { style: "border:0;background:none;color:var(--ink2);margin-left:5px;cursor:pointer",
+        title: "變更團隊名稱 (所有專案/成員/分包關聯不受影響)", onclick: async () => {
+          const nn = prompt(`變更團隊名稱:「${tm.name}」改為`, tm.name);
+          if (nn == null) return;                    // 取消
+          const name = nn.trim();
+          if (!name || name === tm.name) return;
+          try { await api(`/teams/${tm.id}`, { method: "PUT",
+              body: JSON.stringify({ name }) });
+            toast(`已更名為「${name}」`); await loadMeta(); renderUsers(); }
+          catch (e) { toast(e.message, true); }
+        }}, "✎"),
+      el("button", { style: "border:0;background:none;color:var(--red);margin-left:2px;cursor:pointer",
         title: "刪除團隊", onclick: async () => {
           if (!confirm(`刪除團隊「${tm.name}」?(仍有專案或成員歸屬時會被擋下)`)) return;
           try { await api(`/teams/${tm.id}`, { method: "DELETE" });
