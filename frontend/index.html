@@ -465,13 +465,19 @@ async function api(path, opts = {}) {
 }
 
 /* ============================== 登入 / 權限 ============================== */
-function permLevel(fkey) {
+function permLevel(fkey, proj) {
   if (!S.auth.enabled) return "writable";
   if (!S.me) return "invisible";
+  // 有專案上下文且帶 per-project 權限:依「該專案所屬團隊」的角色判定
+  // (修跨團隊越權的 UI 顯示);proj.my_levels===null 表示不受限 (admin)
+  if (proj && "my_levels" in proj) {
+    if (proj.my_levels === null) return "writable";
+    return proj.my_levels[fkey] || "writable";
+  }
   return (S.me.my_levels || {})[fkey] || "writable";
 }
-const canSee = (f) => permLevel(f) !== "invisible";
-const canWrite = (f) => permLevel(f) === "writable";
+const canSee = (f, proj) => permLevel(f, proj) !== "invisible";
+const canWrite = (f, proj) => permLevel(f, proj) === "writable";
 
 function teamName(id) {
   const x = S.teams.find(t => t.id === id);
@@ -1953,8 +1959,8 @@ function openModal(p) {
   for (const [k, input] of Object.entries(f)) {
     const fk = FKEY[k];
     if (!fk) continue;
-    if (!canSee(fk)) input.closest("label").style.display = "none";
-    else if (!canWrite(fk)) input.disabled = true;
+    if (!canSee(fk, d)) input.closest("label").style.display = "none";
+    else if (!canWrite(fk, d)) input.disabled = true;
   }
   // 分包視角 (e):共享欄位一律唯讀 (硬規則,凌駕矩陣);獨立欄位照常
   if (d.is_subcontract_view) {
@@ -1966,24 +1972,24 @@ function openModal(p) {
     for (const [k, input] of Object.entries(f))
       if (SHARED.has(k)) input.disabled = true;
   }
-  if (!canSee("budgets")) budBox.closest ? null : null;
+  if (!canSee("budgets", d)) budBox.closest ? null : null;
   const budLabel = budBox.parentElement;   // label.full
   if (budLabel) {
-    if (!canSee("budgets")) budLabel.style.display = "none";
-    else if (!canWrite("budgets"))
+    if (!canSee("budgets", d)) budLabel.style.display = "none";
+    else if (!canWrite("budgets", d))
       budLabel.querySelectorAll("input,button").forEach(x => x.disabled = true);
   }
   const msLabel = msBox.parentElement;
   if (msLabel) {
-    if (!canSee("schedule")) msLabel.style.display = "none";
-    else if (!canWrite("schedule"))
+    if (!canSee("schedule", d)) msLabel.style.display = "none";
+    else if (!canWrite("schedule", d))
       msLabel.querySelectorAll("input,button").forEach(x => x.disabled = true);
   }
   // 參與成員勾選區 (memBox):與「其他參與者」同屬 participants 權限群
   const memLabel = memBox.parentElement;   // label.full
   if (memLabel) {
-    if (!canSee("participants")) memLabel.style.display = "none";
-    else if (!canWrite("participants")) {
+    if (!canSee("participants", d)) memLabel.style.display = "none";
+    else if (!canWrite("participants", d)) {
       memReadonly = true;   // loadTeamMembers 動態渲染時據此鎖定
       // 若成員清單已載入,直接鎖定現有的勾選與備註
       memRows.forEach(r => { r.cb.disabled = true; r.noteIn.disabled = true; });

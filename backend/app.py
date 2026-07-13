@@ -82,15 +82,25 @@ def load_perm_matrix(db):
 LEVEL_RANK = {"invisible": 0, "readonly": 1, "writable": 2}
 
 
-def effective_roles(db):
-    """請求者的有效角色集合 = 各團隊角色;無團隊歸屬視為 dev (最小權限檢視者)。
+def effective_roles(db, team_id="__all__"):
+    """請求者的有效角色集合。
+    - team_id 未指定 (__all__):使用者在所有團隊的角色聯集 (僅用於全域檢視,
+      如列表的欄位可見性上限)。
+    - team_id 指定:只取使用者「在該團隊」的角色 (權限資安關鍵:
+      編輯某專案時,只能用該專案所屬團隊的角色,不可跨團隊套用)。
+      使用者不屬於該團隊 → 空集合 (無任何權限)。
     管理者/開發模式回傳 None 表示不受限。"""
     u = getattr(g, "user", None)
     if u is None or u["role"] == "admin":
         return None
-    roles = {r["role"] for r in db.execute(
-        "SELECT role FROM team_members WHERE user_id = ?", (u["id"],))}
-    return roles or {"dev"}
+    if team_id == "__all__":
+        roles = {r["role"] for r in db.execute(
+            "SELECT role FROM team_members WHERE user_id = ?", (u["id"],))}
+        return roles or {"dev"}
+    # 指定團隊:只取在該團隊的角色;不屬於該團隊 → 空集合 (最嚴格,無任何權限)
+    return {r["role"] for r in db.execute(
+        "SELECT role FROM team_members WHERE user_id = ? AND team_id IS ?",
+        (u["id"], team_id))}
 
 
 def visible_team_ids(db):
@@ -104,14 +114,19 @@ def visible_team_ids(db):
         "SELECT team_id FROM team_members WHERE user_id = ?", (u["id"],))}
 
 
-def effective_levels(db):
-    """{矩陣鍵: level},多重角色取最寬鬆;None = 不受限"""
-    roles = effective_roles(db)
+def effective_levels(db, team_id="__all__"):
+    """{矩陣鍵: level},多重角色取最寬鬆;None = 不受限。
+    指定 team_id 時只依「該團隊角色」判定 (修跨團隊越權)。
+    角色集合為空 (不屬於該團隊) → 全部 invisible (最嚴格)。"""
+    roles = effective_roles(db, team_id)
     if roles is None:
         return None
     matrix = load_perm_matrix(db)
     out = {}
     for fkey in FIELD_MAP:
+        if not roles:
+            out[fkey] = "invisible"      # 不屬於該團隊:全不可見
+            continue
         best = max(LEVEL_RANK[(matrix.get(r) or {}).get(fkey, "writable")]
                    for r in roles)
         out[fkey] = ["invisible", "readonly", "writable"][best]
@@ -124,8 +139,8 @@ def hide_not_awarded(db):
     return roles is not None and roles <= {"dev"}
 
 
-def strip_invisible(d, db):
-    levels = effective_levels(db)
+def strip_invisible(d, db, team_id="__all__"):
+    levels = effective_levels(db, team_id)
     if levels is None:
         return d
     for fkey, level in levels.items():
@@ -138,9 +153,9 @@ def strip_invisible(d, db):
     return d
 
 
-def writable_fields(db):
-    """回傳目前請求者不可寫的實際欄位集合"""
-    levels = effective_levels(db)
+def writable_fields(db, team_id="__all__"):
+    """回傳目前請求者不可寫的實際欄位集合 (指定 team_id 時依該團隊角色)"""
+    levels = effective_levels(db, team_id)
     if levels is None:
         return set()
     blocked = set()
@@ -435,6 +450,10 @@ def fetch_project(db, pid, force_view=None):
     d["is_subcontract_view"] = is_sub             # 我是不是以分包身分在看
     d["master_team_id"] = master_team
     d["viewing_team_id"] = vteam
+    # 帶「使用者對此專案的欄位權限等級」(依視角團隊角色,修跨團隊越權的 UI 顯示);
+    # admin/開發模式 → None 表示全可寫
+    lv = effective_levels(db, vteam)
+    d["my_levels"] = lv        # None=不受限;否則 {fkey: level}
     # 分包視角:額外帶主包里程碑 (供甘特圖顯示「主:」)
     if is_sub:
         master_ms = db.execute(
@@ -605,7 +624,8 @@ def list_projects():
         for view in project_views_for_user(db, r["id"], r["team_id"]):
             d = fetch_project(db, r["id"], force_view=view)
             if d is not None:
-                out.append(strip_invisible(d, db))
+                # 欄位可見性依「該視角團隊」的角色 (不可跨團隊越權)
+                out.append(strip_invisible(d, db, view[0]))
     return jsonify(out)
 
 
@@ -648,7 +668,7 @@ def get_project(pid):
         subs = set(subcontract_teams(db, pid))
         if p.get("master_team_id") not in vis and not (vis & subs):
             return jsonify({"error": "找不到專案"}), 404
-    return jsonify(strip_invisible(p, db))
+    return jsonify(strip_invisible(p, db, p.get("viewing_team_id", "__all__")))
 
 
 @app.post("/api/projects")
@@ -656,7 +676,11 @@ def get_project(pid):
 def create_project():
     data = request.get_json(silent=True) or {}
     db = get_db()
-    blocked = writable_fields(db)
+    # 權限資安:新建專案的欄位可寫性依「目標團隊」的角色判定 (不可跨團隊越權)
+    target_team = data.get("team_id")
+    if target_team is not None:
+        target_team = int(target_team)
+    blocked = writable_fields(db, target_team)
     for k in list(data.keys()):
         if k in blocked:
             data.pop(k)
@@ -702,13 +726,15 @@ def update_project(pid):
     if old is None:
         return jsonify({"error": "找不到專案"}), 404
     data = request.get_json(silent=True) or {}
-    blocked = writable_fields(db)
-    for k in list(data.keys()):
-        if k in blocked:
-            data.pop(k)
     # 分包視角判定:分包團隊只能改自己的獨立欄位,共享欄位一律唯讀 (硬規則)
     master_team = old["team_id"]
     vteam, is_sub = viewing_team(db, pid, master_team)
+    # 權限資安關鍵:欄位可寫性只依「使用者在此專案所屬團隊的角色」判定,
+    # 不可用使用者在其他團隊的角色 (跨團隊越權)。分包視角用分包團隊。
+    blocked = writable_fields(db, vteam)
+    for k in list(data.keys()):
+        if k in blocked:
+            data.pop(k)
     # 若本次同時變更 team_id (指派/改主包團隊),主包視角的獨立資料
     # (里程碑/認列/成員) 應寫到「新的」team_id,否則會遺留在舊 team_id 讀不到
     if not is_sub and "team_id" in data:
