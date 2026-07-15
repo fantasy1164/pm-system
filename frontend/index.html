@@ -230,6 +230,21 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
   th,td{padding:5px 8px}
 }
 @media (prefers-reduced-motion:reduce){ *{transition:none!important} }
+
+/* ---------- site footer ---------- */
+.site-footer{
+  padding:10px 14px 18px;text-align:center;color:var(--ink2);
+  font-size:12px;line-height:1.7
+}
+.site-footer a{color:var(--navy);text-decoration:none}
+.site-footer a:hover{text-decoration:underline}
+.site-footer .sep{margin:0 6px;color:var(--gray)}
+@media (max-width:640px){
+  .site-footer{padding:8px 10px 14px;font-size:11.5px}
+  .site-footer .license-note{display:block}
+  .site-footer .sep.hide-mobile{display:none}
+}
+
 </style>
 </head>
 <body>
@@ -258,6 +273,17 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
 <main>
   <div class="panel" id="content"><div class="state-msg">載入中…</div></div>
 </main>
+
+<footer class="site-footer" id="siteFooter">
+  <span>© 2026 John Wang 與貢獻者</span>
+  <span class="sep">·</span>
+  <a href="https://github.com/fantasy1164/pm-system" target="_blank" rel="noopener noreferrer">原始碼</a>
+  <span class="sep">·</span>
+  <a href="https://github.com/fantasy1164/pm-system/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a>
+  <span class="sep hide-mobile">·</span>
+  <span class="license-note">第三方元件依各自授權條款使用</span>
+</footer>
+
 
 <div id="toast" role="status"></div>
 
