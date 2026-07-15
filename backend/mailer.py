@@ -86,6 +86,15 @@ _mailer = None
 
 
 def get_mailer():
+    """單機模式硬性拒絕 —— 縱深防禦。
+
+    正常情況 app.py 的 NOTIFY_DRYRUN 就已經攔下所有寄信,永遠不會走到這裡。
+    但萬一未來新增的通知路徑漏接了 dryrun 判斷,這道防線確保單機版寧可
+    拋例外 (被記成 failed 通知) 也不會偷偷對 Gmail API 發出連線。
+    """
+    import config
+    if config.IS_STANDALONE:
+        raise RuntimeError("單機版不支援寄信 (PM_MODE=standalone)")
     global _mailer
     if _mailer is None:
         _mailer = GmailMailer()

@@ -16,10 +16,11 @@ from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import auth_core
+import config
 import persistence
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get("PM_DB_PATH", os.path.join(BASE_DIR, "pm.sqlite"))
+BASE_DIR = config.BASE_DIR
+DB_PATH = config.DB_PATH
 SCHEMA_PATH = os.path.join(BASE_DIR, "schema.sql")
 
 app = Flask(__name__)
@@ -53,6 +54,7 @@ def startup():
     if _started:
         return
     _started = True
+    app.logger.info("啟動模式: %s", config.summary())
     persistence.restore_on_boot(DB_PATH, init_db)
     BACKUP.start()
 
@@ -563,8 +565,7 @@ def add_cors(resp):
     # 真正的存取控制在 JWT,允許 localhost 不影響安全性
     # 預設空:未設定 PM_CORS_ORIGIN 時「不發 Allow-Origin」(瀏覽器擋跨域),
     # 而非自動全開。要全開需主動設 PM_CORS_ORIGIN=* (本機測試用)。
-    allowed = [o.strip() for o in
-               os.environ.get("PM_CORS_ORIGIN", "").split(",") if o.strip()]
+    allowed = config.CORS_ORIGINS
     origin = request.headers.get("Origin", "")
     if "*" in allowed:
         resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -843,7 +844,7 @@ def update_project(pid):
                         f"結案時間:{datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
                         f"系統網址:{SYSTEM_URL}\n")
                 # 结案通知走即时寄送 (比照系统通知,但收件人来自专案矩阵)
-                dry = os.environ.get("PM_NOTIFY_DRYRUN", "1") == "1"
+                dry = config.NOTIFY_DRYRUN
                 stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
                 item = {"dedup_key": f"project_closed:{pid}:{stamp}",
                         "project_id": pid, "subject": subject,
@@ -1233,7 +1234,7 @@ def send_system_notify(db, key, recipients, subject, body):
         (e or "").strip() for e in recipients) if r]
     if not recipients:
         return
-    dry = os.environ.get("PM_NOTIFY_DRYRUN", "1") == "1"
+    dry = config.NOTIFY_DRYRUN
     stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
     item = {"dedup_key": f"{key}:{stamp}", "project_id": None,
             "subject": subject, "recipients": recipients}
@@ -1535,7 +1536,7 @@ def notify_run():
     # 帶了 Bearer token 就先嘗試載入使用者 (失敗不擋,還有 token 那條路)
     if request.headers.get("Authorization", "").startswith("Bearer "):
         auth_core.load_current_user(get_db)
-    token = os.environ.get("PM_NOTIFY_TOKEN", "")
+    token = config.NOTIFY_TOKEN
     given = request.headers.get("X-Notify-Token", "")
     is_admin_user = getattr(g, "user", None) and g.user["role"] == "admin"
     # 常數時間比較,消除 token 比對的 timing side-channel
@@ -1559,7 +1560,7 @@ def notify_run():
                 pass
     set_setting(db, "last_scan_at", now.isoformat(timespec="seconds"))
     db.commit()
-    dry = os.environ.get("PM_NOTIFY_DRYRUN", "1") == "1"  # 預設乾跑,mailer 接上再關
+    dry = config.NOTIFY_DRYRUN
     today = now.date()
     result = {"scanned": 0, "sent": 0, "skipped": 0, "failed": 0, "dryrun": dry}
     for ntype, scanner in SCANNERS.items():
@@ -1894,5 +1895,4 @@ if __name__ == "__main__":
     startup()
     # debug 預設關;本機要熱重載/除錯設 PM_DEBUG=1 再跑。
     # 絕不可在對外環境開啟 (Werkzeug debugger 會暴露互動式 RCE console)。
-    app.run(host="127.0.0.1", port=5000,
-            debug=os.environ.get("PM_DEBUG") == "1")
+    app.run(host="127.0.0.1", port=5000, debug=config.DEBUG)

@@ -7,15 +7,10 @@
 3. 備份來源是 VACUUM INTO 的一致性快照,不直接複製使用中的 DB 檔
 4. SIGTERM (Render spin down / redeploy) 時若有未備份變更,強制 flush 一次
 
-環境變數:
-  PM_SYNC_ENABLED   =1 啟用還原/備份 (預設 0,本機開發不啟用)
-  PM_DRIVE_MODE     local | google        (預設 local)
-  PM_LOCAL_DRIVE_DIR 本機模擬 Drive 的資料夾 (local 模式)
-  PM_BOOTSTRAP      =1 允許「完全沒有任何備份」時以空庫初始化 (僅首次部署用)
-  PM_BACKUP_DEBOUNCE 寫入後延遲秒數再備份 (預設 10)
-  PM_BACKUP_KEEP    保留備份份數 (預設 30)
-  GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN  (google 模式)
-  PM_DRIVE_FOLDER_ID 備份存放的 Drive 資料夾 id (google 模式)
+設定來源:見 config.py。
+注意「開機還原 (RESTORE_ON_BOOT)」與「寫入備份 (SYNC_ENABLED)」是兩個旗標:
+線上版兩者同時開 (Render 磁碟暫時,DB 必須從快照還原);單機版只開備份,
+因為硬碟上的 DB 才是唯一真實來源,開機還原會覆蓋掉使用者上次的編輯。
 """
 import glob
 import logging
@@ -33,10 +28,13 @@ log = logging.getLogger("persistence")
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
 
-SYNC_ENABLED = os.environ.get("PM_SYNC_ENABLED") == "1"
-DRIVE_MODE = os.environ.get("PM_DRIVE_MODE", "local")
-DEBOUNCE = float(os.environ.get("PM_BACKUP_DEBOUNCE", "10"))
-KEEP = int(os.environ.get("PM_BACKUP_KEEP", "30"))
+import config
+
+SYNC_ENABLED = config.SYNC_ENABLED
+RESTORE_ON_BOOT = config.RESTORE_ON_BOOT
+DRIVE_MODE = config.DRIVE_MODE
+DEBOUNCE = config.BACKUP_DEBOUNCE
+KEEP = config.BACKUP_KEEP
 PREFIX = "pmdb_"
 
 # 服務狀態: starting -> ready | failed
@@ -50,7 +48,7 @@ class LocalFolderBackend:
     """以本機資料夾模擬 Drive,供開發與整合測試;介面與 Google 後端一致。"""
 
     def __init__(self):
-        self.dir = os.environ.get("PM_LOCAL_DRIVE_DIR", "/tmp/pm-fake-drive")
+        self.dir = config.LOCAL_DRIVE_DIR
         os.makedirs(self.dir, exist_ok=True)
 
     def list_backups(self):
@@ -169,10 +167,10 @@ def verify_db(path):
 # ============================================================ 開機還原
 def restore_on_boot(db_path, init_db_fn):
     """依保命規則決定服務能否啟動。回傳 True=ready / False=failed。"""
-    if not SYNC_ENABLED:
+    if not RESTORE_ON_BOOT:
         init_db_fn()
-        STATE.update(phase="ready", detail="同步未啟用 (本機開發模式)")
-        log.info("PM_SYNC_ENABLED != 1,跳過還原,直接使用本機 DB")
+        STATE.update(phase="ready", detail=f"開機還原未啟用 ({config.MODE} 模式)")
+        log.info("RESTORE_ON_BOOT 關閉,跳過還原,直接使用本機 DB")
         return True
 
     try:
@@ -184,7 +182,7 @@ def restore_on_boot(db_path, init_db_fn):
         return False
 
     if not backups:
-        if os.environ.get("PM_BOOTSTRAP") == "1":
+        if config.BOOTSTRAP:
             for suffix in ("", "-wal", "-shm"):
                 p = db_path + suffix
                 if os.path.exists(p):

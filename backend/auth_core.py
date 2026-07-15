@@ -14,30 +14,25 @@
   - 使用者管理:僅 admin
   - JWT 只放 uid,角色與授權每次請求都從 DB 讀 → 管理者改權限即刻生效
 
-環境變數:
-  PM_AUTH_ENABLED          =1 啟用 (預設 0,沿用 X-User 開發模式)
-  PM_JWT_SECRET            JWT 簽章密鑰 (啟用時必填,隨機長字串)
-  GOOGLE_OAUTH_CLIENT_ID   「網頁應用程式」OAuth 用戶端 id (登入用,非 Drive 那個)
-  PM_ADMIN_EMAIL           第一位管理者 email,首次登入自動成為 active admin
-  PM_AUTH_TEST_MODE        =1 接受 "test:email:名字" 假 token (僅整合測試,勿在正式環境設)
+設定來源:見 config.py (PM_AUTH_ENABLED / PM_JWT_SECRET /
+GOOGLE_OAUTH_CLIENT_ID / PM_ADMIN_EMAIL / PM_AUTH_TEST_MODE)。
+單機模式 (PM_MODE=standalone) 一律 AUTH_ENABLED=False —— 不連 Google。
 """
 import functools
-import os
 import time
 
 import jwt as pyjwt
 from flask import g, jsonify, request
 
-AUTH_ENABLED = os.environ.get("PM_AUTH_ENABLED") == "1"
-JWT_SECRET = os.environ.get("PM_JWT_SECRET", "")
-OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-ADMIN_EMAIL = os.environ.get("PM_ADMIN_EMAIL", "").strip().lower()
-TEST_MODE = os.environ.get("PM_AUTH_TEST_MODE") == "1"
+import config
+
+AUTH_ENABLED = config.AUTH_ENABLED
+JWT_SECRET = config.JWT_SECRET
+OAUTH_CLIENT_ID = config.OAUTH_CLIENT_ID
+ADMIN_EMAIL = config.ADMIN_EMAIL
+TEST_MODE = config.AUTH_TEST_MODE
 TOKEN_MINUTES = 30          # JWT 有效期 = idle 上限
 RENEW_BELOW = 25 * 60       # 剩餘秒數低於此值即換發 (滑動續期)
-
-if AUTH_ENABLED and not JWT_SECRET:
-    raise RuntimeError("PM_AUTH_ENABLED=1 時必須設定 PM_JWT_SECRET")
 
 
 # ------------------------------------------------------------ Google 驗證
