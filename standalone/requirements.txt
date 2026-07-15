@@ -1,0 +1,12 @@
+# 單機版相依套件 = 後端共用的那份 + waitress
+#
+# 刻意用 -r 引用而非複製一份清單:未來 backend/requirements.txt 升級版本時,
+# 單機版自動跟上,不會出現「線上升了、單機版忘了升」的漂移。
+#
+# 為什麼需要 waitress:
+#   線上版用 gunicorn,但 gunicorn 依賴 fcntl,Windows 上根本裝不起來也跑不動。
+#   waitress 是純 Python 的 WSGI server,跨平台,單人使用效能綽綽有餘。
+#   (backend/requirements.txt 裡的 gunicorn 在 Windows 上可以安裝、只是不使用,
+#    因此不需要為了單機版去動那份清單 —— Render 的 build 完全不受影響。)
+-r ../backend/requirements.txt
+waitress>=3.0

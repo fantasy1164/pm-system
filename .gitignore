@@ -4,3 +4,13 @@ __pycache__/
 *.sqlite-shm
 nohup.out
 .env
+
+# 虛擬環境。部分 Python 版本會在 venv 內自動放一個 .gitignore 代勞,
+# 但不是所有版本都會 —— 單機版使用者的 Python 從哪來我們無法控制,明確寫出來。
+.venv/
+
+# 單機版的使用者資料 —— 絕不進 git。
+# (*.sqlite 其實已經蓋到,但這裡明確寫出來:這兩個目錄整個都是使用者的東西,
+#  與程式碼分離,使用者 git pull 更新程式時不會被動到。)
+standalone/data/
+standalone/backups/

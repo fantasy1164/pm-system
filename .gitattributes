@@ -1,0 +1,7 @@
+# .bat 必須是 CRLF。用 LF 的 .bat 在部分 Windows 環境會出現 goto 失效這類
+# 跟程式邏輯無關的詭異錯誤,極難追查。這裡直接釘死。
+#
+# 刻意「只」規範 .bat:對既有檔案加 eol 規則會觸發全專案重新正規化,
+# 在 core.autocrlf=true 的 Windows 上會讓 git status 突然顯示所有檔案都被修改。
+# 那個驚嚇不值得。
+*.bat text eol=crlf

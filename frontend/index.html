@@ -603,7 +603,10 @@ function applyPerms() {
   $("#vUsers").style.display = isAdmin() ? "" : "none";
   const isAnyPM = isAdmin() ||
     ((S.me && S.me.teams) || []).some(m => m.role === "pm");
-  $("#vNotify").style.display = (S.auth.enabled && isAnyPM) || !S.auth.enabled ? "" : "none";
+  // 單機版:不寄信,通知模組整個隱藏 (「使用者管理」不隱藏 —— 團隊管理在那裡面)
+  const showNotify = !S.standalone &&
+    ((S.auth.enabled && isAnyPM) || !S.auth.enabled);
+  $("#vNotify").style.display = showNotify ? "" : "none";
   applyYearControlsVisibility();
 }
 function logout(msg) {
@@ -2185,6 +2188,9 @@ window.addEventListener("resize", () => {
     await waitBackend();
     const cfg = await api("/auth/config");
     S.auth = { enabled: cfg.auth_enabled, clientId: cfg.google_client_id };
+    // 單機版不寄信,訊息通知整個模組沒有意義 → 隱藏該分頁。
+    // 舊版後端不回 mode 時 cfg.mode 為 undefined → false,行為不變。
+    S.standalone = cfg.mode === "standalone";
     if (S.auth.enabled) {
       if (!getTok()) { renderUserChip(); applyPerms(); return renderLogin(); }
       try { S.me = await api("/auth/me"); }

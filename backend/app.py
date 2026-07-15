@@ -1057,9 +1057,14 @@ def init_year(new_year):
 # ------------------------------------------------------------- auth
 @app.get("/api/auth/config")
 def auth_config():
-    """前端據此決定要不要顯示登入畫面 (公開端點,不含機密)。"""
+    """前端據此決定要不要顯示登入畫面 (公開端點,不含機密)。
+
+    mode 供前端隱藏「單機版用不到的功能」(如訊息通知 —— 單機版不寄信)。
+    純新增欄位,線上版回 "online",前端行為與新增前相同。
+    """
     return jsonify({"auth_enabled": auth_core.AUTH_ENABLED,
-                    "google_client_id": auth_core.OAUTH_CLIENT_ID})
+                    "google_client_id": auth_core.OAUTH_CLIENT_ID,
+                    "mode": config.MODE})
 
 
 def _me_payload(db, user):
