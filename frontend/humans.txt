@@ -1,0 +1,14 @@
+/* TEAM */
+
+Original author: John Wang
+GitHub: @fantasy1164
+Project: Project Schedule and Budget Management System
+
+/* LICENSE */
+
+Copyright (c) 2026 John Wang and contributors.
+This project is open-source software licensed under the MIT License.
+Third-party components and services retain their respective copyrights,
+trademarks, licenses, and terms of service.
+
+Repository: https://github.com/fantasy1164/pm-system
