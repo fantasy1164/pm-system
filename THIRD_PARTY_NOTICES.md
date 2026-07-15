@@ -9,6 +9,7 @@
 本清單依據下列內容整理：
 
 - `backend/requirements.txt`
+- `standalone/requirements.txt`
 - Python 原始碼中的直接 `import`
 - `frontend/index.html` 載入的外部服務
 - `render.yaml` 部署設定
@@ -22,10 +23,13 @@
 | Flask | Web Application Framework | BSD-3-Clause |
 | Flask-Limiter | API Rate Limiting | MIT |
 | Requests | HTTP Client | Apache License 2.0 |
-| Gunicorn | Python WSGI HTTP Server | MIT |
+| Gunicorn | Python WSGI HTTP Server（線上版） | MIT |
+| Waitress | Python WSGI HTTP Server（單機版） | ZPL 2.1 |
 | PyJWT | JSON Web Token 實作 | MIT |
 | google-auth | Google 身分驗證 | Apache License 2.0 |
 | Werkzeug | WSGI 工具與 ProxyFix | BSD-3-Clause |
+
+Waitress 僅供單機版使用（`standalone/requirements.txt`），線上版不使用。其授權為 Zope Public License 2.1，屬 OSI 認可的寬鬆授權，惟含商標與姓名使用限制條款，散布時應保留其原始授權聲明。
 
 上述套件可能另行安裝各自的間接依賴。重新散布原始碼、執行檔、Container Image 或其他封裝成果前，應重新產生並檢查完整依賴與授權清單。
 

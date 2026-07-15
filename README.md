@@ -4,6 +4,17 @@
 
 系統支援多人即時檢視、Google 帳號登入、團隊資料隔離、角色與欄位級權限、專案期程追蹤、預算認列、保固管理、通知及異動稽核。
 
+系統有兩種部署形態，共用同一份程式碼：
+
+| | 線上版 | 單機版 |
+|---|---|---|
+| 用途 | 多人協作 | 單機離線使用 |
+| 部署 | GitHub Pages + Render | 一台 Windows 電腦 |
+| 啟用方式 | 預設 | 環境變數 `PM_MODE=standalone` |
+| 需要網路 | 是 | 否（僅安裝時需要） |
+
+單機版的安裝與使用請參閱 [`standalone/README-standalone.md`](standalone/README-standalone.md)。
+
 ## 專案狀態
 
 本專案為開放原始碼專案，採用 [MIT License](LICENSE) 授權。
@@ -47,6 +58,7 @@ Copyright © 2026 John Wang and contributors.
 - Google Drive 版本化資料庫備份
 - 深色與淺色主題
 - 響應式桌面及行動裝置介面
+- 線上多人版與離線單機版共用同一套程式碼
 
 ## 系統架構
 
@@ -77,6 +89,31 @@ Flask API + Gunicorn
 
 系統啟動時會先還原最新可用的資料庫快照。若還原失敗，服務將維持不可用狀態並回傳 HTTP 503，不會靜默建立空白資料庫對外服務。
 
+### 單機版架構
+
+設定 `PM_MODE=standalone` 後，同一份程式碼會以單一行程、完全離線的形態運作：
+
+```text
+使用者瀏覽器
+    │
+    │ HTTP / JSON （同源，不需 CORS，不需登入）
+    ▼
+Flask + Waitress （127.0.0.1，僅綁本機）
+    │
+    ├── frontend/index.html
+    │   └── 由後端直接服務，前端因此改用相對路徑 /api
+    │
+    ├── SQLite
+    │   └── standalone/data/pm.sqlite （唯一真實資料來源）
+    │
+    └── 本機資料夾
+        └── standalone/backups/ 版本化快照
+```
+
+單機版不連線任何外部服務：不做 Google 登入、不呼叫 Google Drive API、不寄送 Gmail。
+
+與線上版的關鍵差異在於**開機不還原快照**。線上版的 Render 磁碟是暫時的，資料庫必須從快照還原；單機版的資料庫就在使用者硬碟上，是唯一真實來源，開機還原反而會覆蓋掉使用者上次的編輯。因此兩者由不同的旗標控制（`PM_RESTORE_ON_BOOT` 與 `PM_SYNC_ENABLED`），單機版只保留備份，還原改為使用者主動執行。
+
 ## 技術架構
 
 | 層級 | 技術 |
@@ -85,6 +122,7 @@ Flask API + Gunicorn
 | 後端 | Python 3.12、Flask |
 | 資料庫 | SQLite |
 | 正式 WSGI Server | Gunicorn |
+| 單機版 WSGI Server | Waitress |
 | 登入 | Google Identity Services |
 | Google Token 驗證 | google-auth |
 | 系統 Session | PyJWT |
@@ -107,7 +145,8 @@ Flask API + Gunicorn
 | Flask | Web API Framework | BSD-3-Clause |
 | Flask-Limiter | API Rate Limiting | MIT |
 | Requests | HTTP Client | Apache-2.0 |
-| Gunicorn | WSGI HTTP Server | MIT |
+| Gunicorn | WSGI HTTP Server（線上版） | MIT |
+| Waitress | WSGI HTTP Server（單機版） | ZPL 2.1 |
 | PyJWT | JWT 編碼與驗證 | MIT |
 | google-auth | Google ID Token 驗證 | Apache-2.0 |
 | Werkzeug | WSGI 工具與 ProxyFix | BSD-3-Clause |
@@ -156,9 +195,19 @@ Flask API + Gunicorn
 - 資料庫完整性檢查
 - 版本化備份及還原失敗保護
 
+### 單機版的安全模型
+
+單機版沒有登入，也沒有權限控管。任何能操作該台電腦的人都可以讀寫全部資料。
+
+這是單機版的設計前提，不是缺陷。它的保護邊界是**作業系統帳號與該台電腦本身**，而不是應用程式。服務只綁定 `127.0.0.1`，不對區域網路開放。
+
+需要多人協作、身分驗證或權限控管時，應使用線上版。
+
 本專案不保證部署後自動符合任何特定公司的資安政策、ISO 27001、個資法、GDPR 或其他法令及標準。部署者應依實際環境自行完成安全審查與設定。
 
 ## 權限與角色
+
+以下僅適用於線上版。單機版不啟用登入，因此沒有使用者、角色與權限矩陣。
 
 | 角色 | 說明 |
 |---|---|
@@ -210,16 +259,30 @@ pm-system/
 ├── backend/
 │   ├── app.py
 │   ├── auth_core.py
+│   ├── config.py          # 線上／單機模式的設定唯一來源
 │   ├── persistence.py
+│   ├── mailer.py
 │   ├── schema.sql
 │   ├── seed_demo.py
+│   ├── test_modes.py      # 模式回歸測試
 │   ├── requirements.txt
+│   ├── gunicorn.conf.py
 │   └── wsgi.py
 ├── frontend/
 │   ├── index.html
 │   └── humans.txt
+├── standalone/            # 單機版（線上部署不會用到此目錄）
+│   ├── install.bat
+│   ├── install.py
+│   ├── start.bat
+│   ├── serve.py
+│   ├── requirements.txt
+│   ├── README-standalone.md
+│   ├── data/              # 使用者資料庫（不進 Git）
+│   └── backups/           # 本機版本化快照（不進 Git）
 ├── .github/
 │   └── workflows/
+├── .gitattributes
 ├── DEPLOY.md
 ├── render.yaml
 ├── THIRD_PARTY_NOTICES.md
@@ -280,11 +343,36 @@ python -m http.server 8080
 
 前端網址：`http://localhost:8080`
 
-從 `localhost` 或 `127.0.0.1` 開啟時，前端預設連線至本機後端。從 GitHub Pages 開啟時，前端會使用 `frontend/index.html` 中設定的正式 API 網址。
+前端會依實際情況決定 API 位址，依序判斷：
+
+| 情況 | API 位址 |
+|---|---|
+| `localStorage.pm_api` 有值 | 該值（手動覆寫，供除錯） |
+| 頁面由後端服務（單機版） | `/api`（同源相對路徑） |
+| 從 GitHub Pages 開啟 | `index.html` 中設定的 `PROD_API` |
+| 其他（本機開發、直接開檔） | `http://127.0.0.1:5000/api` |
+
+「頁面由後端服務」是後端在回應 HTML 時注入一個旗標判定的，磁碟上的 `index.html` 不含該旗標。因此 GitHub Pages 取得的仍是原始檔案，前端得以維持單一份程式碼，且判斷結果與後端使用哪個 port 無關。
 
 ## 環境變數
 
 所有密鑰、Token、帳號資料及正式環境識別資訊都不得提交至 Git。
+
+模式相關的旗標集中在 [`backend/config.py`](backend/config.py) 判讀。`PM_MODE` 未設定時，各變數的行為與本檔導入前完全相同。
+
+例外是 `GOOGLE_CLIENT_*`、`GOOGLE_REFRESH_TOKEN`、`PM_DRIVE_FOLDER_ID` 及 `PM_MAIL_FROM_*`：這些由 `persistence.py` 與 `mailer.py` 中的 Google 專屬類別直接讀取。單機版不會建立這些類別（`PM_DRIVE_MODE` 被強制為 `local`，寄信另有防呆攔阻），因此不影響離線性質。
+
+### 執行模式
+
+| 變數 | 必填 | 說明 |
+|---|---|---|
+| `PM_MODE` | 否 | `online`（預設）或 `standalone` |
+| `PM_SERVE_FRONTEND` | 否 | 設為 `1` 由後端服務 `frontend/`；單機版預設開啟 |
+| `PM_RESTORE_ON_BOOT` | 否 | 開機是否從快照還原；預設同 `PM_SYNC_ENABLED` |
+
+`PM_MODE=standalone` 會強制關閉所有需要聯網的功能（Google 登入、Drive 備份、Gmail 通知），**且不受其他環境變數覆寫**。即使設定 `PM_AUTH_ENABLED=1`，單機模式仍不啟用登入。這是刻意的：單機版的離線性質不應被誤設的環境變數破壞。
+
+`PM_MODE` 只接受這兩個值，打錯字會拒絕啟動，不會靜默跑成非預期的模式。
 
 ### 登入與驗證
 
@@ -308,7 +396,8 @@ python -m http.server 8080
 
 | 變數 | 必填 | 說明 |
 |---|---|---|
-| `PM_SYNC_ENABLED` | 正式環境必填 | 設為 `1` 啟用備份及還原 |
+| `PM_SYNC_ENABLED` | 正式環境必填 | 設為 `1` 啟用備份 |
+| `PM_RESTORE_ON_BOOT` | 否 | 開機是否從快照還原；預設同 `PM_SYNC_ENABLED` |
 | `PM_DRIVE_MODE` | 是 | `google` 或 `local` |
 | `GOOGLE_CLIENT_ID` | Google 模式必填 | Google OAuth Client ID |
 | `GOOGLE_CLIENT_SECRET` | Google 模式必填，機密 | Google OAuth Client Secret |
@@ -320,6 +409,8 @@ python -m http.server 8080
 | `PM_DB_PATH` | 否 | SQLite 資料庫路徑 |
 
 `PM_BOOTSTRAP=1` 僅可用於第一次部署。第一次成功備份後應立即移除。
+
+備份與開機還原是兩個獨立的旗標。線上版兩者同時啟用；單機版只啟用備份，開機不還原（硬碟上的資料庫才是唯一真實來源）。
 
 ### Gmail 通知
 
@@ -336,6 +427,17 @@ python -m http.server 8080
 |---|---|
 | `PM_DEBUG` | 設為 `1` 啟用 Flask Debug，僅限本機 |
 | `PM_LOCAL_DRIVE_DIR` | Local Drive 模式使用的本機資料夾 |
+
+### 單機版
+
+單機版不需要設定任何環境變數，`start.bat` 會處理。以下僅供調整用：
+
+| 變數 | 說明 |
+|---|---|
+| `PM_PORT` | 指定 port（預設 5000，被佔用時自動往後尋找） |
+| `PM_NO_BROWSER` | 設為 `1` 啟動時不自動開啟瀏覽器 |
+| `PM_DB_PATH` | 資料庫路徑（預設 `standalone/data/pm.sqlite`） |
+| `PM_LOCAL_DRIVE_DIR` | 備份資料夾（預設 `standalone/backups/`） |
 
 ## API 概要
 
@@ -393,6 +495,26 @@ python -m http.server 8080
 8. 啟用 GitHub Pages。
 9. 設定 Google OAuth Authorized JavaScript Origins。
 10. 收斂 `PM_CORS_ORIGIN` 至正式前端網域。
+
+### 單機版
+
+單機版不需要上述任何步驟，也不需要 Google 憑證、Render 或 GitHub Pages：
+
+1. 安裝 Python 3.12（勾選 Add Python to PATH）。
+2. 取得本專案原始碼。
+3. 執行 `standalone/install.bat`（僅此步驟需要網路）。
+4. 執行 `standalone/start.bat`。
+
+詳見 [`standalone/README-standalone.md`](standalone/README-standalone.md)。
+
+### 更新
+
+線上版與單機版共用同一份程式碼，推送至 `main` 後：
+
+- 前端有異動時 GitHub Pages 自動發布，後端有異動時 Render 自動部署。
+- 單機版執行 `git pull` 後重新啟動 `start.bat` 即完成更新；使用者資料位於 `standalone/data/`，不受更新影響。
+
+新增功能若本質上需要聯網，應於 `backend/config.py` 的 standalone 區塊將其關閉，並以 `backend/test_modes.py` 驗證。
 
 ## 資料與隱私
 
