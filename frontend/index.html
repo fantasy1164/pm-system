@@ -290,10 +290,19 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
 <script>
 "use strict";
 /* ============================== 設定與狀態 ============================== */
-// 正式環境 (GitHub Pages) 自動連 Render;本機開發連 localhost
+// API 位址三段式判斷 (依序):
+//   1. localStorage.pm_api  — 手動覆寫,除錯用
+//   2. window.PM_SERVED_BY_FLASK — 本頁由後端自己吐出 (單機版):
+//      同源相對路徑,不論後端跑在哪個 port 都對,連 CORS 都不需要。
+//      這個旗標由 backend/app.py 在回應時注入,靜態檔本身沒有它 ——
+//      所以 GitHub Pages 與 python -m http.server 都不會誤判。
+//   3. github.io — 線上前端連 Render
+//   4. 其餘 (本機開發:另起靜態伺服器 / 直接開檔) — 連本機後端
 const PROD_API = "https://pm-system-api.onrender.com/api";
 const API = localStorage.getItem("pm_api") ||
-  (location.hostname.endsWith("github.io") ? PROD_API : "http://127.0.0.1:5000/api");
+  (window.PM_SERVED_BY_FLASK ? "/api"
+   : location.hostname.endsWith("github.io") ? PROD_API
+   : "http://127.0.0.1:5000/api");
 const S = {
   years: [], year: null, projects: [], view: "table",
   pxPerDay: window.innerWidth < 640 ? 1.4 : 2.4,

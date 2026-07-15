@@ -10,7 +10,7 @@ import os
 import sqlite3
 from datetime import date, datetime
 
-from flask import Flask, g, jsonify, request
+from flask import Flask, Response, abort, g, jsonify, request, send_from_directory
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -595,6 +595,37 @@ def readiness_gate():
         return jsonify({"error": "服務尚未就緒",
                         "phase": persistence.STATE["phase"],
                         "detail": persistence.STATE["detail"]}), 503
+
+
+# --------------------------------------------------- 前端靜態檔 (單機版專用)
+# 線上版的前端在 GitHub Pages,後端不服務靜態檔 (SERVE_FRONTEND=False),
+# 這整段不會註冊 —— 線上路由表與重構前完全相同。
+if config.SERVE_FRONTEND:
+
+    # 注入標記:讓前端知道「這頁是後端自己吐的」,據此改用同源相對路徑 /api。
+    # 關鍵:只改吐出去的那份 HTML,磁碟上的 index.html 一字不動 ——
+    # GitHub Pages 拿到的仍是原檔,前端因此維持單一份程式碼。
+    # 這比猜測 port 可靠:不論單機版跑在哪個 port 都成立。
+    _FLASK_MARKER = '<script>window.PM_SERVED_BY_FLASK=1;</script>\n</head>'
+
+    @app.get("/")
+    @limiter.exempt
+    def serve_index():
+        path = os.path.join(config.FRONTEND_DIR, "index.html")
+        with open(path, encoding="utf-8") as f:
+            html = f.read()
+        html = html.replace("</head>", _FLASK_MARKER, 1)
+        resp = Response(html, mimetype="text/html")
+        resp.headers["Cache-Control"] = "no-store"   # git pull 後立刻看到新版
+        return resp
+
+    @app.get("/<path:filename>")
+    @limiter.exempt
+    def serve_frontend_file(filename):
+        # 保險:即使路由優先序有意外,也絕不讓靜態檔處理器攔截 API
+        if filename.startswith("api/"):
+            abort(404)
+        return send_from_directory(config.FRONTEND_DIR, filename)
 
 
 # ------------------------------------------------------------------- routes
