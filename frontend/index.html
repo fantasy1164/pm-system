@@ -600,6 +600,9 @@ function isAdmin() {
 }
 function applyPerms() {
   $("#btnAdd").style.display = canCreate() ? "" : "none";
+  // 單機版該分頁只剩團隊管理 (帳號與權限矩陣都不適用) → 標籤據實更名,
+  // 否則會出現一個叫「權限設定」卻沒有權限設定的分頁
+  $("#vUsers").textContent = S.standalone ? "團隊管理" : "權限設定";
   $("#vUsers").style.display = isAdmin() ? "" : "none";
   const isAnyPM = isAdmin() ||
     ((S.me && S.me.teams) || []).some(m => m.role === "pm");
@@ -1599,9 +1602,15 @@ const ROLE_TXT = { admin:"管理者", pm:"專案經理", dept_head:"部門主管
 async function renderUsers() {
   let users, perms;
   try {
-    [users, S.teams, perms] = await Promise.all(
-      [api("/users"), api("/teams"), api("/perms")]);
-    S.perms = perms;
+    if (S.standalone) {
+      // 單機版沒有登入,也沒有權限控管 → 只需要團隊資料,不打 /users 與 /perms
+      S.teams = await api("/teams");
+      users = [];
+    } else {
+      [users, S.teams, perms] = await Promise.all(
+        [api("/users"), api("/teams"), api("/perms")]);
+      S.perms = perms;
+    }
   } catch (e) { $("#content").innerHTML =
     `<div class="state-msg">${esc(e.message)}</div>`; return; }
   const wrap = el("div", { style: "padding:12px" });
@@ -1644,6 +1653,11 @@ async function renderUsers() {
     catch (e) { toast(e.message, true); }
   }}, "＋ 新增團隊"));
   wrap.append(teamBar);
+
+  // 單機版到此為止:沒有登入 → 沒有帳號可管;權限裝飾器在 auth 關閉時是 no-op
+  // → 權限矩陣就算改了也不會生效。兩塊都是「看起來能用、其實沒作用」的死 UI,
+  // 索性不產生。團隊管理保留 —— 專案要掛團隊,跨團隊分包也要用。
+  if (S.standalone) { $("#content").replaceChildren(wrap); return; }
 
   /* ---- 使用者列表 (含團隊歸屬 B.a) ---- */
   const thead = el("thead", {}, el("tr", {},
