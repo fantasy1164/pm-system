@@ -1,0 +1,72 @@
+# 單機版單一 exe 的自動打包。
+#
+# PyInstaller 不能跨平台打包 —— Windows 的 exe 只能在 Windows 上產生。
+# 開發機不是 Windows、或懶得跑 build.bat 時,讓 GitHub 的 Windows 主機代勞:
+#
+#   手動觸發:GitHub → Actions → Build standalone exe → Run workflow
+#            → 完成後在該次 run 的 Artifacts 區下載 zip (內含 exe)
+#
+#   發佈版本:打 tag (例 standalone-v1.0) 推上去,會自動建立 GitHub Release
+#            並把 exe 掛上去 —— 使用者從 Releases 頁面就能直接下載。
+#
+# 此 workflow 只在手動觸發或 standalone-v* tag 時執行,
+# 平常 push / PR 完全不跑,不影響線上部署流程。
+name: Build standalone exe
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "standalone-v*"
+
+permissions:
+  contents: write   # 建立 Release 需要;Artifacts 上傳不需要額外權限
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r standalone/requirements.txt pyinstaller
+
+      - name: Build exe
+        run: >
+          pyinstaller --noconfirm --clean
+          --distpath standalone/dist
+          --workpath standalone/build/.work
+          standalone/build/pm.spec
+
+      - name: Smoke test (start, probe health, stop)
+        shell: pwsh
+        run: |
+          $env:PM_NO_BROWSER = "1"
+          $exe = Get-ChildItem standalone/dist/*.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          $ok = $false
+          foreach ($i in 1..60) {
+            Start-Sleep -Seconds 1
+            try {
+              $r = Invoke-RestMethod -Uri http://127.0.0.1:5000/api/health -TimeoutSec 2
+              if ($r.status -eq "ok") { $ok = $true; break }
+            } catch {}
+          }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "exe started but /api/health never became ok" }
+          Write-Host "Smoke test passed."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pm-standalone-exe
+          path: standalone/dist/*.exe
+
+      - name: Attach to release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/standalone-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: standalone/dist/*.exe

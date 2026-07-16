@@ -21,6 +21,7 @@
 standalone 區塊強制關閉 —— 這是唯一需要記得的維護規則。
 """
 import os
+import sys
 
 
 def _flag(name, default=False):
@@ -28,8 +29,21 @@ def _flag(name, default=False):
     return default if v is None else v == "1"
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))     # .../backend
-REPO_ROOT = os.path.dirname(BASE_DIR)                     # .../pm-system
+# ------------------------------------------------------------------ 路徑
+# PyInstaller 單檔 exe 執行時 (sys.frozen),程式資產被解壓到暫存資料夾
+# sys._MEIPASS —— 每次啟動都是新的、結束就刪。因此「程式資產」與
+# 「使用者資料」必須分家:
+#   程式資產 (backend/schema.sql、frontend/) → _MEIPASS,唯讀
+#   使用者資料 (data/、backups/)             → exe 所在資料夾,持久
+# 線上版 (Render) 與原始碼執行永遠不會 frozen,走 else 分支,行為零改變。
+IS_FROZEN = bool(getattr(sys, "frozen", False)) and hasattr(sys, "_MEIPASS")
+
+if IS_FROZEN:
+    REPO_ROOT = sys._MEIPASS                              # 解壓後的資產根目錄
+    BASE_DIR = os.path.join(REPO_ROOT, "backend")         # schema.sql 在這
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # .../backend
+    REPO_ROOT = os.path.dirname(BASE_DIR)                  # .../pm-system
 FRONTEND_DIR = os.path.join(REPO_ROOT, "frontend")
 
 # ------------------------------------------------------------------ 模式
@@ -39,8 +53,32 @@ if MODE not in ("online", "standalone"):
         f"PM_MODE 只能是 online 或 standalone,收到:{MODE!r}")
 IS_STANDALONE = MODE == "standalone"
 
-# 單機版的資料落點:與程式碼分離,git pull 更新程式不會動到資料
-STANDALONE_DIR = os.path.join(REPO_ROOT, "standalone")
+
+def _writable(d):
+    """能在 d 建立並刪除檔案才算可寫 —— os.access 在 Windows 上不可信。"""
+    try:
+        os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, ".pm-write-test")
+        with open(probe, "w"):
+            pass
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+# 單機版的資料落點:與程式碼分離,更新程式不會動到資料
+if IS_FROZEN:
+    # 首選:exe 旁邊 (data/、backups/ 跟著 exe 走,使用者看得到、好備份)。
+    # exe 若被放進 Program Files 之類不可寫的位置,退到使用者資料夾。
+    _exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    if _writable(_exe_dir):
+        STANDALONE_DIR = _exe_dir
+    else:
+        _appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        STANDALONE_DIR = os.path.join(_appdata, "pm-system")
+else:
+    STANDALONE_DIR = os.path.join(REPO_ROOT, "standalone")
 STANDALONE_DATA_DIR = os.path.join(STANDALONE_DIR, "data")
 STANDALONE_BACKUP_DIR = os.path.join(STANDALONE_DIR, "backups")
 

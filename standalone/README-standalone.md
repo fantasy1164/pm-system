@@ -4,9 +4,56 @@
 
 與線上版共用同一份程式碼,差別只在啟動時的模式設定。
 
+有兩種取得方式,擇一即可:
+
+| | 單一 exe (推薦給一般使用者) | 原始碼 + install.bat (開發者) |
+| --- | --- | --- |
+| 需要安裝 Python | **否** | 是 |
+| 需要安裝步驟 | **無,點兩下就用** | 執行一次 install.bat |
+| 取得方式 | GitHub Releases 下載 | git clone / 下載 ZIP |
+| 更新方式 | 換新的 exe | git pull |
+
 ---
 
-## 安裝
+## 單一 exe 版
+
+### 使用者怎麼用
+
+1. 把 `專案管理系統.exe` 放到任何**可寫入的資料夾**(桌面、文件、D 槽都可以;
+   不建議放 `Program Files` —— 放了也能跑,但資料會改存到
+   `%LOCALAPPDATA%\pm-system`,比較難找)。
+2. **點兩下**。黑色視窗出現、瀏覽器自動打開系統,就這樣。
+   - 第一次執行會自動在 exe 旁邊建立 `data\`(資料庫)與 `backups\`(備份)
+   - 之後每次執行都是同一套流程 —— 沒有「安裝」與「啟動」之分
+   - 系統已經在執行時再點一次,只會把瀏覽器帶到既有畫面,不會重複啟動
+3. **關閉黑色視窗即停止系統**。
+
+第一次執行時 Windows SmartScreen 可能跳出藍色警告(未簽章 exe 的正常現象),
+點「**其他資訊**」→「**仍要執行**」即可,之後不會再問。
+
+要備份或搬家:整個資料夾(exe + `data\` + `backups\`)複製走就好。
+要更新程式:用新的 exe 覆蓋舊的,`data\` 不受影響。
+
+### 開發者怎麼打包
+
+exe 是建置產物,不進 git。兩種產生方式:
+
+**方式一:GitHub 代打(推薦,開發機不必是 Windows)**
+
+- 手動:GitHub → Actions → **Build standalone exe** → Run workflow,
+  完成後在該次執行的 Artifacts 下載
+- 發佈:打 tag 推上去(例 `git tag standalone-v1.0 && git push --tags`),
+  自動建立 Release 並附上 exe,使用者直接從 Releases 頁面下載
+
+**方式二:本機打包(需要 Windows + Python 3.9+)**
+
+雙擊 `standalone/build/build.bat`,產物在 `standalone/dist/專案管理系統.exe`。
+
+圖示在 `standalone/build/app.ico`,想換造型改 `make_icon.py` 重新產生即可。
+
+---
+
+## 原始碼版:安裝
 
 只需要做一次,而且**只有這一步需要網路**(pip 要下載套件)。
 
