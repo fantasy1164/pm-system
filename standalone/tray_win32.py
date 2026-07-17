@@ -83,6 +83,39 @@ def _wire():
                                  wintypes.LPVOID]
     u.GetMessageW.argtypes = [wintypes.LPVOID, wintypes.HWND,
                               wintypes.UINT, wintypes.UINT]
+    u.TranslateMessage.argtypes = [wintypes.LPVOID]
+    u.DispatchMessageW.restype = LRESULT
+    u.DispatchMessageW.argtypes = [wintypes.LPVOID]
+
+    # 下面這幾個尤其不能省。從結構欄位讀出來的控制代碼 (例如 cls.hInstance)
+    # 是 Python int,而 ctypes 對「沒有 argtypes 的函式」一律把 int 當 32 位元
+    # C int 送 —— HINSTANCE 是模組基底位址 (0x00007FF6…),塞不進 32 位元,
+    # 當場 OverflowError。
+    #
+    # 陷阱在於 HWND、HMENU 這些代碼 Windows 刻意保證塞得進 32 位元 (相容性
+    # 包袱),所以少了 argtypes 也「碰巧」能跑 —— 於是同一段程式裡,有的呼叫
+    # 沒事、有的爆炸。全部明寫,不留「碰巧」。
+    u.RegisterClassW.restype = wintypes.ATOM
+    u.RegisterClassW.argtypes = [wintypes.LPVOID]
+    u.UnregisterClassW.restype = wintypes.BOOL
+    u.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+    u.DestroyWindow.restype = wintypes.BOOL
+    u.DestroyWindow.argtypes = [wintypes.HWND]
+    u.SetForegroundWindow.restype = wintypes.BOOL
+    u.SetForegroundWindow.argtypes = [wintypes.HWND]
+    u.CreatePopupMenu.argtypes = []
+    u.DestroyMenu.restype = wintypes.BOOL
+    u.DestroyMenu.argtypes = [wintypes.HMENU]
+    u.AppendMenuW.restype = wintypes.BOOL
+    u.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT,
+                              wintypes.WPARAM, wintypes.LPCWSTR]
+    u.GetCursorPos.restype = wintypes.BOOL
+    u.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    u.PostQuitMessage.argtypes = [ctypes.c_int]
+    # LoadIconW 只設回傳型別:第二個參數要傳「整數資源」(MAKEINTRESOURCE),
+    # 若把 argtypes 設成 LPCWSTR,傳整數會變成 TypeError。
+    k.GetLastError.restype = wintypes.DWORD
+    s.Shell_NotifyIconW.argtypes = [wintypes.DWORD, wintypes.LPVOID]
     s.Shell_NotifyIconW.restype = wintypes.BOOL
     k.GetModuleHandleW.restype = wintypes.HINSTANCE
     k.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
@@ -251,6 +284,8 @@ def selftest():
     """
     if not IS_WINDOWS:
         return "skipped (not Windows)"
+    from ctypes import wintypes
+
     u, k, s, LRESULT = _wire()
     NOTIFYICONDATAW = _notify_icon_struct()
     WNDCLASSW, WNDPROC = _wndclass_struct(LRESULT)
@@ -270,9 +305,34 @@ def selftest():
                             None, None, cls.hInstance, None)
     if not hwnd:
         raise SystemExit(f"CreateWindowExW 失敗: {k.GetLastError()}")
+
+    # 選單那幾個呼叫也要走一遍 —— 它們平常只在使用者按右鍵時才執行,
+    # 若簽章有錯,不測就要等使用者按下去才炸。TrackPopupMenu 需要真人互動,
+    # 只能略過;能自動驗的都驗。
+    menu = u.CreatePopupMenu()
+    if not menu:
+        raise SystemExit(f"CreatePopupMenu 失敗: {k.GetLastError()}")
+    if not u.AppendMenuW(menu, MF_STRING | MF_DEFAULT, 1000, "測試項目"):
+        raise SystemExit(f"AppendMenuW 失敗: {k.GetLastError()}")
+    if not u.AppendMenuW(menu, MF_SEPARATOR, 0, None):
+        raise SystemExit(f"AppendMenuW(分隔線) 失敗: {k.GetLastError()}")
+    u.DestroyMenu(menu)
+
+    # 圖示載入:LoadIconW 的第二個參數是「整數資源」,型別最容易寫錯的一處
+    if not u.LoadIconW(None, IDI_APPLICATION):
+        raise SystemExit(f"LoadIconW 失敗: {k.GetLastError()}")
+
+    pt = wintypes.POINT()
+    u.GetCursorPos(ctypes.byref(pt))
+
+    # 收攤這一段是重點:hInstance 是真正的 64 位元位址,少了 argtypes 會在
+    # 這裡溢位 —— 而那正是使用者按下「停止並結束」才會走到的路。
     u.DestroyWindow(hwnd)
-    u.UnregisterClassW(cls.lpszClassName, cls.hInstance)
-    return f"ok (NOTIFYICONDATAW={size} bytes, {8 * ctypes.sizeof(ctypes.c_void_p)}-bit)"
+    if not u.UnregisterClassW(cls.lpszClassName, cls.hInstance):
+        raise SystemExit(f"UnregisterClassW 失敗: {k.GetLastError()}")
+    return (f"ok (NOTIFYICONDATAW={size} bytes, "
+            f"{8 * ctypes.sizeof(ctypes.c_void_p)}-bit, "
+            f"視窗/選單/圖示/收攤 全數通過)")
 
 
 if __name__ == "__main__":
