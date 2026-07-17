@@ -36,11 +36,35 @@ jobs:
         run: pip install -r standalone/requirements.txt pyinstaller
 
       - name: Build exe
-        run: >
-          pyinstaller --noconfirm --clean
-          --distpath standalone/dist
-          --workpath standalone/build/.work
-          standalone/build/pm.spec
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean `
+            --distpath standalone/dist `
+            --workpath standalone/build/.work `
+            standalone/build/pm.spec 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
+
+      - name: Verify splash dependencies are complete
+        shell: pwsh
+        run: |
+          # 啟動畫面的失效方式很陰險:PyInstaller 找不到某個必要檔案時只印一行
+          # warning,exe 照樣產出、CI 照樣綠燈,然後在使用者機器上點兩下就跳
+          # 「Failed to load Tcl DLL」。這裡把那行 warning 升級成建置失敗。
+          if (Select-String -Path build.log -Pattern "missing the file" -Quiet) {
+            Select-String -Path build.log -Pattern "missing the file"
+            throw "PyInstaller could not find a file required by the splash screen"
+          }
+          # spec 會印出最終的優先解壓清單。tcl/tk 的相依 (zlib1、vcruntime140…)
+          # 必須在裡面 —— 它們若只是「有打包」但沒提前解出來,bootloader 載入
+          # Tcl 時會退去 System32 撈:CI runner 裝了 VC 執行期所以撈得到,
+          # 使用者的乾淨 Windows 撈不到。這正是冒煙測試抓不到的那種失敗。
+          $line = Select-String -Path build.log -Pattern "\[splash\] 最終優先解壓清單" |
+                  Select-Object -First 1
+          if (-not $line) { throw "spec did not report the splash extraction list" }
+          Write-Host $line.Line
+          if ($line.Line -notmatch "zlib1\.dll") {
+            throw "zlib1.dll is not extracted before Tcl loads - clean Windows machines would fail"
+          }
 
       - name: Smoke test (start, probe health, verify tray module, stop)
         shell: pwsh

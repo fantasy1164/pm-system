@@ -99,6 +99,60 @@ splash = Splash(
     always_on_top=True,
 )
 
+# ---------------------------------------------------------------- 啟動畫面的相依
+# bootloader 在解壓縮階段只會先解出 splash.splash_requirements 這份清單裡的檔案,
+# 然後「立刻」LoadLibrary 載入 tcl86t.dll。問題是 PyInstaller 放進那份清單的只有
+# Tcl/Tk 自己與幾個 .tcl —— 而 tcl86t.dll 還相依 zlib1.dll、vcruntime140.dll 等。
+# 那些檔案有打包,但要等後面才解出來,載入當下不在 _MEI 目錄裡。
+#
+# Windows 找不到時會退去 System32 撈:開發機與 CI runner 通常裝了 VS/VC 執行期,
+# 撈得到,所以一路綠燈;而使用者的乾淨 Windows 撈不到,點兩下就跳
+# 「Failed to load Tcl DLL … LoadLibrary: 找不到指定的模組」然後死掉 ——
+# 「找不到的模組」指的不是 tcl86t.dll,是它的相依。
+#
+# 所以:凡是 Tcl/Tk 匯入、而且我們確實有打包的 DLL,一律列進優先解壓清單。
+# 這不是猜哪一顆會缺,是把「載入 Tcl 之前該就位的東西」一次補齊。
+def _force_tcltk_deps_early():
+    if sys.platform != "win32":
+        return                      # 色鍵透明與這條路都是 Windows 才有的事
+    import pefile
+
+    bundled = {os.path.basename(dest).lower(): dest for dest, _src, _t in a.binaries}
+    src_of = {os.path.basename(dest).lower(): src for dest, src, _t in a.binaries}
+
+    def imports_of(path):
+        pe = pefile.PE(path, fast_load=True)
+        pe.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
+        names = {e.dll.decode("utf-8", "ignore").lower()
+                 for e in getattr(pe, "DIRECTORY_ENTRY_IMPORT", [])}
+        pe.close()
+        return names
+
+    todo = [splash.tcl_lib, splash.tk_lib]
+    seen = set()
+    added = []
+    while todo:                     # 廣度優先:相依的相依也要 (zlib1 → vcruntime)
+        lib = todo.pop()
+        if not lib or lib in seen:
+            continue
+        seen.add(lib)
+        try:
+            deps = imports_of(lib)
+        except Exception as e:
+            print(f"[splash] 無法分析 {lib} 的相依: {e}")
+            continue
+        for dep in deps:
+            if dep in bundled and bundled[dep] not in splash.splash_requirements:
+                splash.splash_requirements.add(bundled[dep])
+                added.append(bundled[dep])
+                todo.append(src_of[dep])
+    print(f"[splash] 補進優先解壓清單: {sorted(added) or '無 (原本就完整)'}")
+    print(f"[splash] 最終優先解壓清單: {sorted(splash.splash_requirements)}")
+
+
+_force_tcltk_deps_early()
+
 exe = EXE(
     pyz,
     a.scripts,
