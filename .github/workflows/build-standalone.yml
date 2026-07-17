@@ -44,27 +44,21 @@ jobs:
             standalone/build/pm.spec 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { throw "pyinstaller failed" }
 
-      - name: Verify splash dependencies are complete
+      - name: Verify Tcl/Tk is bundled for the startup animation
         shell: pwsh
         run: |
-          # 啟動畫面的失效方式很陰險:PyInstaller 找不到某個必要檔案時只印一行
-          # warning,exe 照樣產出、CI 照樣綠燈,然後在使用者機器上點兩下就跳
-          # 「Failed to load Tcl DLL」。這裡把那行 warning 升級成建置失敗。
-          if (Select-String -Path build.log -Pattern "missing the file" -Quiet) {
-            Select-String -Path build.log -Pattern "missing the file"
-            throw "PyInstaller could not find a file required by the splash screen"
+          # 啟動動畫是 Python 起來之後自己開 Tk 視窗畫的 (刻意不用 PyInstaller
+          # 的 Splash —— 那個由 bootloader 在解壓縮途中載入 Tcl,相依還沒就位,
+          # 在沒裝 VC 執行期的乾淨 Windows 上會直接讓 exe 死掉)。
+          # 但這條路的前提是 tkinter 與 Tcl/Tk 真的有被打包:少了它們,動畫會
+          # 靜默消失 —— 服務照跑,沒有人會發現,直到使用者說「點下去沒反應」。
+          $toc = Get-Content standalone/build/.work/pm/Analysis-00.toc -Raw
+          foreach ($m in @("_tkinter", "tcl86t.dll", "tk86t.dll")) {
+            if ($toc -notmatch [regex]::Escape($m)) {
+              throw "$m is missing from the bundle - the startup animation would silently vanish"
+            }
           }
-          # spec 會印出最終的優先解壓清單。tcl/tk 的相依 (zlib1、vcruntime140…)
-          # 必須在裡面 —— 它們若只是「有打包」但沒提前解出來,bootloader 載入
-          # Tcl 時會退去 System32 撈:CI runner 裝了 VC 執行期所以撈得到,
-          # 使用者的乾淨 Windows 撈不到。這正是冒煙測試抓不到的那種失敗。
-          $line = Select-String -Path build.log -Pattern "\[splash\] 最終優先解壓清單" |
-                  Select-Object -First 1
-          if (-not $line) { throw "spec did not report the splash extraction list" }
-          Write-Host $line.Line
-          if ($line.Line -notmatch "zlib1\.dll") {
-            throw "zlib1.dll is not extracted before Tcl loads - clean Windows machines would fail"
-          }
+          Write-Host "Tcl/Tk bundled OK."
 
       - name: Smoke test (start, probe health, verify tray module, stop)
         shell: pwsh
@@ -106,29 +100,6 @@ jobs:
             throw "tray_win32 missing from exe - the tray icon would not work"
           }
           Write-Host "Smoke test passed."
-
-      - name: Verify splash screen was built in
-        shell: pwsh
-        run: |
-          # 啟動畫面是「使用者以為當機了」的唯一防線,而它失敗時是靜默的:
-          # PyInstaller 只會在 build log 印一行,exe 照樣產出、照樣能跑。
-          $tcl = "standalone/build/.work/pm/Splash-00_script.tcl"
-          if (-not (Test-Path $tcl)) {
-            throw "splash script not generated - is tkinter missing on the build machine?"
-          }
-          if (-not (Select-String -Path $tcl -Pattern "transparentcolor" -Quiet)) {
-            throw "splash transparency (magenta color key) not applied - a rectangle would show"
-          }
-          # 有文字圖層 = bootloader 會把解壓縮中的檔名 (zlib1.dll…) 寫上畫面。
-          # 那是它內建的行為,關不掉,唯一的辦法就是不要文字圖層 (spec 不給 text_pos)。
-          #
-          # 認「create text」而不是「status_text」:後者是 IPC 指令處理器的一部分,
-          # 不管有沒有文字圖層都會出現在腳本裡 —— 拿它當證據會永遠誤判。
-          # 只有真的建立了文字圖層,Tcl 才會有 canvas 的 create text 與 font create。
-          if (Select-String -Path $tcl -Pattern "create text" -Quiet) {
-            throw "splash has a text layer - bootloader would print dll names on it"
-          }
-          Write-Host "Splash screen OK."
 
       - name: Verify no copyleft is bundled
         shell: pwsh

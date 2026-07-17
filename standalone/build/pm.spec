@@ -15,13 +15,15 @@
   (詳見 serve.py 的模組說明)。判定依據是 sys.stdout is None,
   start.bat 走原始碼、有主控台,行為完全不受影響。
 * app.ico 同時作為 exe 圖示與系統匣圖示,故也需以資料檔打包一份。
-* Splash():啟動畫面的第一段。它由 bootloader 在「解壓縮階段」就顯示出來 ——
-  那是單檔 exe 最慢、使用者最容易以為沒反應的幾秒,也正是自製視窗補不到的
-  空窗期 (自製視窗要等 Python 起來才畫得出來)。Python 起來後改由 serve.py
-  的 Tk 視窗接手播放逐格動畫,兩段用同一批圖,交棒時畫面不會跳動。
-* 這裡刻意「不」傳 text_pos:那個參數是文字圖層的開關,而只要文字圖層存在,
-  bootloader 就會把正在解壓的檔名 (zlib1.dll…) 一個個寫上去。那是它內建的
-  進度顯示,關不掉 —— 唯一的辦法就是根本不要文字圖層。
+* 刻意「不」使用 PyInstaller 的 Splash():
+  它由 bootloader 在解壓縮途中顯示,而那時 Tcl 的相依 DLL (zlib1.dll、
+  VC 執行期…) 還沒被解出來 —— Windows 只好退去 System32 撈。開發機與 CI
+  runner 裝了 VS,撈得到,一路綠燈;使用者的乾淨 Windows 撈不到,點兩下就跳
+  「Failed to load Tcl DLL … 找不到指定的模組」然後死掉。
+  把 Tcl/Tk 的相依補進優先解壓清單也治不好 (缺的那顆根本沒被打包)。
+  啟動畫面只是裝飾,不值得讓 exe 有「在乾淨機器上開不起來」的風險。
+  改由 serve.py 在 Python 起來後自己開 Tk 視窗 —— 那時全部檔案都解壓完了,
+  同一顆 tcl86t.dll 的相依就在 _MEI 裡,不必向系統求援。
 * onefile:a.binaries / a.datas 直接進 EXE(),不產生資料夾版。
 """
 import glob
@@ -90,74 +92,9 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# 啟動畫面第一段:解壓縮期間顯示第 0 格 (小人靜止)。不給 text_pos = 沒有
-# 文字圖層 = bootloader 沒地方寫它的解壓縮檔名。
-splash = Splash(
-    os.path.join(HERE, "splash_00.png"),
-    binaries=a.binaries,
-    datas=a.datas,
-    always_on_top=True,
-)
-
-# ---------------------------------------------------------------- 啟動畫面的相依
-# bootloader 在解壓縮階段只會先解出 splash.splash_requirements 這份清單裡的檔案,
-# 然後「立刻」LoadLibrary 載入 tcl86t.dll。問題是 PyInstaller 放進那份清單的只有
-# Tcl/Tk 自己與幾個 .tcl —— 而 tcl86t.dll 還相依 zlib1.dll、vcruntime140.dll 等。
-# 那些檔案有打包,但要等後面才解出來,載入當下不在 _MEI 目錄裡。
-#
-# Windows 找不到時會退去 System32 撈:開發機與 CI runner 通常裝了 VS/VC 執行期,
-# 撈得到,所以一路綠燈;而使用者的乾淨 Windows 撈不到,點兩下就跳
-# 「Failed to load Tcl DLL … LoadLibrary: 找不到指定的模組」然後死掉 ——
-# 「找不到的模組」指的不是 tcl86t.dll,是它的相依。
-#
-# 所以:凡是 Tcl/Tk 匯入、而且我們確實有打包的 DLL,一律列進優先解壓清單。
-# 這不是猜哪一顆會缺,是把「載入 Tcl 之前該就位的東西」一次補齊。
-def _force_tcltk_deps_early():
-    if sys.platform != "win32":
-        return                      # 色鍵透明與這條路都是 Windows 才有的事
-    import pefile
-
-    bundled = {os.path.basename(dest).lower(): dest for dest, _src, _t in a.binaries}
-    src_of = {os.path.basename(dest).lower(): src for dest, src, _t in a.binaries}
-
-    def imports_of(path):
-        pe = pefile.PE(path, fast_load=True)
-        pe.parse_data_directories(
-            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"]])
-        names = {e.dll.decode("utf-8", "ignore").lower()
-                 for e in getattr(pe, "DIRECTORY_ENTRY_IMPORT", [])}
-        pe.close()
-        return names
-
-    todo = [splash.tcl_lib, splash.tk_lib]
-    seen = set()
-    added = []
-    while todo:                     # 廣度優先:相依的相依也要 (zlib1 → vcruntime)
-        lib = todo.pop()
-        if not lib or lib in seen:
-            continue
-        seen.add(lib)
-        try:
-            deps = imports_of(lib)
-        except Exception as e:
-            print(f"[splash] 無法分析 {lib} 的相依: {e}")
-            continue
-        for dep in deps:
-            if dep in bundled and bundled[dep] not in splash.splash_requirements:
-                splash.splash_requirements.add(bundled[dep])
-                added.append(bundled[dep])
-                todo.append(src_of[dep])
-    print(f"[splash] 補進優先解壓清單: {sorted(added) or '無 (原本就完整)'}")
-    print(f"[splash] 最終優先解壓清單: {sorted(splash.splash_requirements)}")
-
-
-_force_tcltk_deps_early()
-
 exe = EXE(
     pyz,
     a.scripts,
-    splash,                # 啟動畫面本體 (含 Tcl 腳本)
-    splash.binaries,       # onefile 需要:Tcl/Tk 的最小執行期
     a.binaries,
     a.datas,
     name="專案管理系統",

@@ -194,49 +194,18 @@ def open_when_ready(url, port):
 # 期間畫面上什麼都沒有 —— 使用者的合理反應是「壞了?」然後再點兩下。啟動畫面
 # 填滿這段空窗,並且撐到瀏覽器真的畫出來為止才收掉。
 #
-# 畫面由兩段接力,原因是兩者各有一件事做不到:
+# 為什麼不用 PyInstaller 內建的 Splash (它能在「解壓縮階段」就顯示,涵蓋更早):
+# 那個畫面是 bootloader 在解壓縮途中載入 Tcl 畫出來的,而 Tcl 的相依 DLL
+# (zlib1.dll、VC 執行期…) 那時還沒被解出來,Windows 只好退去 System32 撈。
+# 開發機與 CI runner 裝了 VS 撈得到,使用者的乾淨 Windows 撈不到 —— 結果是
+# exe 在「我們測得到的每一台機器上」都好好的,到了使用者手上點兩下就跳
+# 「Failed to load Tcl DLL」然後死掉。啟動畫面只是裝飾,不值得為它冒
+# 「在乾淨機器上開不起來」的風險。
 #
-#   1. 解壓縮階段 (Python 還沒起來) → PyInstaller 的 Splash,只能顯示靜態圖。
-#      它是唯一能在這個階段出現的東西 —— 自製視窗要等 Python 起來才畫得出來。
-#   2. Python 起來之後 → 這裡的 Tk 視窗,播放 splash_00~07.png 的逐格動畫。
-#      PyInstaller 的 Splash 只能更新「一行文字」,做不出逐格動畫。
-#
-# 兩段用的是同一批圖 (第 1 段就是第 0 格),所以交棒時畫面不會位移或閃動:
-# 使用者看到的是「小人站著 → 開始跑」。第 2 段若失敗 (沒有桌面環境等),
-# 第 1 段的靜態圖會一路撐到最後 —— 動畫只是裝飾,不能讓它拖垮啟動。
+# 這裡的視窗則是等 Python 起來之後才建立 —— 那時全部檔案都解壓完了,同一顆
+# tcl86t.dll 的相依就躺在 _MEI 目錄裡,不必向系統求援。代價是解壓縮那幾秒
+# 沒有畫面,由 claim_single_instance() 去擋「以為沒反應而多點幾下」的後果。
 _SPLASH_STOP = threading.Event()
-_SPLASH_GONE = threading.Event()        # 確定沒有 PyInstaller 啟動畫面可用
-
-
-def _pyi_splash():
-    """取得可用的 pyi_splash 模組;沒有啟動畫面時回 None。
-
-    例外必須全接,不能只接 ImportError:pyi_splash 在「模組載入當下」就會去連
-    bootloader 開的那個 IPC socket,連不上時丟的是 KeyError (找不到環境變數
-    _PYI_SPLASH_IPC),不是 ImportError。沒有畫面的情形很平常 —— 原始碼執行、
-    遠端桌面、畫面已經關掉 —— 絕不能讓一個裝飾品的缺席,把 splash_close()
-    這種「錯誤處理路徑上的清理動作」也一起炸掉。
-    """
-    if not FROZEN or _SPLASH_GONE.is_set():
-        return None
-    try:
-        import pyi_splash
-        if pyi_splash.is_alive():
-            return pyi_splash
-    except Exception:
-        pass
-    _SPLASH_GONE.set()
-    return None
-
-
-def _close_pyi_splash():
-    s = _pyi_splash()
-    if s is not None:
-        try:
-            s.close()
-        except Exception:
-            pass
-    _SPLASH_GONE.set()
 
 
 def licenses_dir():
@@ -301,8 +270,7 @@ def splash_animate():
         x = (root.winfo_screenwidth() - w) // 2
         y = (root.winfo_screenheight() - h) // 2
         root.geometry(f"{w}x{h}+{x}+{y}")
-        root.update()                        # 先把第一格畫出來...
-        _close_pyi_splash()                  # ...再收掉靜態圖,中間不留空隙
+        root.update()                        # 先把第一格畫出來再進迴圈
 
         def tick(i=0):
             if _SPLASH_STOP.is_set():
@@ -318,10 +286,49 @@ def splash_animate():
 
 
 def splash_close():
-    """收掉啟動畫面 (兩段都收)。可重複呼叫;任何離場路徑都必須先經過這裡 ——
-    包括錯誤跳窗 (alert),否則對話框會被永遠置頂的啟動畫面蓋住。"""
+    """收掉啟動畫面。可重複呼叫;任何離場路徑都必須先經過這裡 —— 包括錯誤
+    跳窗 (alert),否則對話框會被永遠置頂的啟動畫面蓋住。"""
     _SPLASH_STOP.set()
-    _close_pyi_splash()
+
+
+# ---------------------------------------------------------------- 只准一份
+_MUTEX = None           # 保留參照:控制代碼被回收 = 鎖跟著沒了
+
+
+def claim_single_instance():
+    """宣告「我是唯一的實例」。回傳 False 表示已經有另一份在跑或正在啟動。
+
+    為什麼不能只靠 existing_instance() 掃 port:那要等對方「綁上 port」才看得到。
+    而解壓縮那幾秒畫面上什麼都沒有,使用者很自然會再點兩下 —— 兩個行程於是
+    同時在解壓縮、同時掃 port、都沒掃到,然後各自開一套服務,對同一顆 SQLite
+    跑兩條備份執行緒。互斥鎖在行程一開始就宣告,不必等 port,才擋得住這個競態。
+    (原本這個空窗由啟動畫面遮著,砍掉它之後,這道鎖就從「保險」變成必要。)
+
+    刻意失敗即放行:鎖只是防呆,建不出來時寧可讓系統照常啟動。
+    """
+    global _MUTEX
+    if os.name != "nt":
+        return True                 # 只在 Windows 出貨;其他平台不擋
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.CreateMutexW.restype = wintypes.HANDLE
+        k.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL,
+                                   wintypes.LPCWSTR]
+        # Local\ 前綴 = 只在目前這個登入工作階段內唯一。用 Global\ 會讓
+        # 同一台機器上的另一個 Windows 使用者被擋住 —— 他們的資料各自獨立
+        # (%LOCALAPPDATA% 是每個帳號一份),本來就該能各跑各的。
+        h = k.CreateMutexW(None, False, "Local\\pm-system-standalone")
+        if not h:
+            return True
+        if ctypes.get_last_error() == 183:      # ERROR_ALREADY_EXISTS
+            return False
+        _MUTEX = h                  # 不釋放:行程結束時作業系統自然回收
+        return True
+    except Exception as e:
+        logging.getLogger("serve").warning("互斥鎖建立失敗,不擋: %s", e)
+        return True
 
 
 def open_folder(path):
@@ -558,6 +565,19 @@ def main():
     preferred = int(os.environ.get("PM_PORT", "5000"))
 
     running = existing_instance(preferred)
+    if running is None and not claim_single_instance():
+        # 另一份正在啟動 (多半還在解壓縮),它還沒綁上 port,所以掃不到。
+        # 等它 —— 這比「再開一套」對使用者好,也保護了資料庫。
+        say("\n另一個實例正在啟動,等待中…")
+        for _ in range(120):                    # 最多等 60 秒
+            time.sleep(0.5)
+            running = existing_instance(preferred)
+            if running:
+                break
+        else:
+            # 等不到:對方可能已經死了,鎖是它留下的殘影。照常啟動,不要卡死使用者。
+            logging.getLogger("serve").warning("等不到另一個實例,照常啟動")
+
     if running:
         splash_close()
         say(f"\n系統已經在執行中 → {running}")
