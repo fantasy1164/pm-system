@@ -57,6 +57,20 @@ os.environ["PM_MODE"] = "standalone"
 # 但 logging 的預設 StreamHandler 會寫進 None 而噴錯 —— 因此下面要改導記錄檔。
 CONSOLE = sys.stdout is not None and sys.stderr is not None
 
+if CONSOLE:
+    # 有主控台時,把輸出編碼釘死成 UTF-8。
+    #
+    # 原因:輸出一旦被轉向 (start.bat > log.txt、管線、CI 擷取),Python 就不
+    # 走主控台的 Unicode 介面,改用系統地區編碼 —— 英文版 Windows 是 cp1252,
+    # 印不出中文,直接 UnicodeEncodeError。本檔的訊息全是中文,等於「因為要
+    # 印一句提示而讓整個系統啟動失敗」。errors="replace" 再保一層:寧可某個
+    # 字變成問號,也不要為了一句訊息而死。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 HOST = "127.0.0.1"          # 只綁本機:不對區網開放,不需要防火牆例外
 
 import config                # 只讀環境變數,不牽動 logging,可安全提早 import

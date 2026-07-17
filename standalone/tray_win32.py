@@ -336,5 +336,12 @@ def selftest():
 
 
 if __name__ == "__main__":
+    # 輸出被轉向時 (CI、管線、> log.txt),Python 不走主控台的 Unicode 介面,
+    # 改用系統地區編碼 —— 英文版 Windows 是 cp1252,印中文會 UnicodeEncodeError。
+    # 這支的訊息是中文的,不接這一手,診斷工具自己會先死在「印出診斷結果」上。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     print(selftest())
     sys.exit(0)
