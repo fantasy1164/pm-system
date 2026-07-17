@@ -34,7 +34,7 @@ def _flag(name, default=False):
 # sys._MEIPASS —— 每次啟動都是新的、結束就刪。因此「程式資產」與
 # 「使用者資料」必須分家:
 #   程式資產 (backend/schema.sql、frontend/) → _MEIPASS,唯讀
-#   使用者資料 (data/、backups/)             → exe 所在資料夾,持久
+#   使用者資料 (data/、backups/、logs/)       → %LOCALAPPDATA%,持久
 # 線上版 (Render) 與原始碼執行永遠不會 frozen,走 else 分支,行為零改變。
 IS_FROZEN = bool(getattr(sys, "frozen", False)) and hasattr(sys, "_MEIPASS")
 
@@ -67,16 +67,36 @@ def _writable(d):
         return False
 
 
+def _user_data_home():
+    """使用者資料的固定家:Windows 為 %LOCALAPPDATA%\\專案管理系統。
+
+    為什麼固定,而不是放 exe 旁邊:exe 是可以被隨手丟到桌面、隨手刪掉、
+    隨手換新版的東西 —— 使用者資料不該跟著這種東西流浪。位置固定之後,
+    「exe 放哪」與「資料在哪」徹底脫鉤,exe 才能真的隨便放。
+
+    為什麼不是 Program Files:那是唯讀的程式安放區,寫入需要管理員權限,
+    等於每次點兩下都跳 UAC,而且沒有管理員權限的使用者根本無法使用。
+    %LOCALAPPDATA% 才是微軟指定給「應用程式的使用者資料」的位置:免權限、
+    每個 Windows 帳號各自一份、隨使用者設定檔被公司的備份機制一起帶走。
+    """
+    if os.name == "nt":
+        base = (os.environ.get("LOCALAPPDATA")
+                or os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+    else:   # 開發機在 Linux/macOS 測打包版時的等價位置
+        base = (os.environ.get("XDG_DATA_HOME")
+                or os.path.join(os.path.expanduser("~"), ".local", "share"))
+    return os.path.join(base, "專案管理系統")
+
+
 # 單機版的資料落點:與程式碼分離,更新程式不會動到資料
 if IS_FROZEN:
-    # 首選:exe 旁邊 (data/、backups/ 跟著 exe 走,使用者看得到、好備份)。
-    # exe 若被放進 Program Files 之類不可寫的位置,退到使用者資料夾。
-    _exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-    if _writable(_exe_dir):
-        STANDALONE_DIR = _exe_dir
-    else:
-        _appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        STANDALONE_DIR = os.path.join(_appdata, "pm-system")
+    # 單一 exe:資料一律放固定位置。PM_DATA_DIR 供進階使用者改放他處
+    # (例如放到公司有定期備份的網路磁碟)。
+    STANDALONE_DIR = os.environ.get("PM_DATA_DIR") or _user_data_home()
+    if not _writable(STANDALONE_DIR):
+        raise RuntimeError(
+            f"資料夾無法寫入:{STANDALONE_DIR}\n"
+            "請確認磁碟空間與資料夾權限,或設定環境變數 PM_DATA_DIR 指定其他位置。")
 else:
     STANDALONE_DIR = os.path.join(REPO_ROOT, "standalone")
 STANDALONE_DATA_DIR = os.path.join(STANDALONE_DIR, "data")

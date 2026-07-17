@@ -42,7 +42,7 @@ jobs:
           --workpath standalone/build/.work
           standalone/build/pm.spec
 
-      - name: Smoke test (start, probe health, stop)
+      - name: Smoke test (start, probe health, verify tray module, stop)
         shell: pwsh
         run: |
           $env:PM_NO_BROWSER = "1"
@@ -58,7 +58,79 @@ jobs:
           }
           Stop-Process -Id $p.Id -Force
           if (-not $ok) { throw "exe started but /api/health never became ok" }
+
+          # 使用者資料一律固定在 %LOCALAPPDATA%\專案管理系統:exe 旁邊必須
+          # 一塵不染,否則「exe 可以隨便放」這個賣點就破功了。
+          $beside = Get-ChildItem standalone/dist -Directory
+          if ($beside) { throw "exe left folders beside itself: $($beside.Name -join ', ')" }
+          $home_ = "$env:LOCALAPPDATA\專案管理系統"
+          foreach ($d in @("data", "backups", "logs")) {
+            if (-not (Test-Path "$home_\$d")) { throw "missing $home_\$d" }
+          }
+          if (-not (Test-Path "$home_\data\pm.sqlite")) { throw "no database at $home_" }
+
+          # exe 是 console=False 打包的,沒有主控台可看 —— 訊息都在記錄檔裡。
+          # 記錄檔在固定位置,不在 exe 旁邊 (使用者資料一律放 %LOCALAPPDATA%)。
+          $log = "$env:LOCALAPPDATA\專案管理系統\logs\pm.log"
+          if (-not (Test-Path $log)) { throw "no log file: windowed logging is broken" }
+          Get-Content $log
+
+          # 「系統匣模組載入失敗」= tray_win32 沒被打包進去,使用者會沒有圖示、
+          # 沒有停止按鈕。這是靜默退化 —— 服務照跑,不擋冒煙測試,故明著抓。
+          # (「系統匣建立失敗」則放行:CI runner 沒有桌面工作階段,建不出來是正常的。)
+          if (Select-String -Path $log -Pattern "系統匣模組載入失敗" -Quiet) {
+            throw "tray_win32 missing from exe - the tray icon would not work"
+          }
           Write-Host "Smoke test passed."
+
+      - name: Verify splash screen was built in
+        shell: pwsh
+        run: |
+          # 啟動畫面是「使用者以為當機了」的唯一防線,而它失敗時是靜默的:
+          # PyInstaller 只會在 build log 印一行,exe 照樣產出、照樣能跑。
+          $tcl = "standalone/build/.work/pm/Splash-00_script.tcl"
+          if (-not (Test-Path $tcl)) {
+            throw "splash script not generated - is tkinter missing on the build machine?"
+          }
+          if (-not (Select-String -Path $tcl -Pattern "transparentcolor" -Quiet)) {
+            throw "splash transparency (magenta color key) not applied - a rectangle would show"
+          }
+          # 有文字圖層 = bootloader 會把解壓縮中的檔名 (zlib1.dll…) 寫上畫面。
+          # 那是它內建的行為,關不掉,唯一的辦法就是不要文字圖層。
+          if (Select-String -Path $tcl -Pattern "status_text" -Quiet) {
+            throw "splash has a text layer - bootloader would print dll names on it"
+          }
+          Write-Host "Splash screen OK."
+
+      - name: Verify no copyleft is bundled
+        shell: pwsh
+        run: |
+          # 這一步是本專案「散布物零 copyleft」這條線的守門員。
+          # 失效是靜默的:某天有人加了個看似無害的相依 (或某個套件換了授權),
+          # exe 照樣產得出來、照樣能跑,沒有人會發現 —— 直到有人來問。
+          $toc = Get-Content standalone/build/Analysis-00.toc -Raw -ErrorAction SilentlyContinue
+          if (-not $toc) { $toc = Get-Content standalone/build/.work/pm/Analysis-00.toc -Raw }
+          # pystray/python-xlib = LGPL;certifi = MPL-2.0 (由 requests 帶入)
+          foreach ($m in @("pystray", "Xlib", "certifi", "cryptography", "PIL")) {
+            if ($toc -match "site-packages[\\/]$m[\\/.]") {
+              throw "$m got bundled into the exe - it carries copyleft or was meant to be excluded"
+            }
+          }
+          # 授權聲明:BSD/Apache/ZPL 都要求二進位散布時隨附著作權聲明
+          foreach ($f in @("THIRD_PARTY_NOTICES.md", "LICENSE")) {
+            if ($toc -notmatch [regex]::Escape($f)) {
+              throw "$f is not bundled - binary distribution must carry the notices"
+            }
+          }
+          Write-Host "No copyleft in the bundle."
+
+      - name: Verify the native tray wiring on real Windows
+        shell: pwsh
+        run: |
+          # 系統匣是純 ctypes 寫的,而 ctypes 的錯誤 (結構大小、簽章) 在 Linux
+          # 上完全看不出來 —— 只有真的 Windows 才驗得到。這一步不需要桌面:
+          # 它只檢查結構大小與視窗類別註冊,不碰 Shell_NotifyIcon。
+          python standalone/tray_win32.py
 
       - uses: actions/upload-artifact@v4
         with:

@@ -19,3 +19,4 @@ standalone/build/.venv-build/
 #  與程式碼分離,使用者 git pull 更新程式時不會被動到。)
 standalone/data/
 standalone/backups/
+standalone/logs/

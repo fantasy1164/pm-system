@@ -10,3 +10,13 @@
 #    因此不需要為了單機版去動那份清單 —— Render 的 build 完全不受影響。)
 -r ../backend/requirements.txt
 waitress>=3.0
+
+
+# 系統匣圖示不需要任何套件 —— 見 standalone/tray_win32.py:直接以標準庫的
+# ctypes 呼叫 Windows API。原本這裡是 pystray,它是 LGPL-3.0:單檔 exe 會把
+# 它一起交給使用者,整包就沾上 copyleft 義務。本專案是 MIT,散布物裡不留
+# 這種灰色地帶,故自己寫了那 200 行。
+#
+# Pillow 也不在這裡:它只在「重新產生圖示與啟動畫面」時用得到
+# (standalone/build/make_icon.py、make_splash.py),產物已隨版本庫提供,
+# 不進 exe 也不需要安裝。

@@ -61,6 +61,17 @@ def main():
              f"目前是 {sys.version.split()[0]}")
         sys.exit(1)
 
+    # 啟動畫面要靠 Tcl/Tk,而 PyInstaller 是從建置機的 tkinter 去取那份執行期。
+    # 沒有 tkinter 的話 PyInstaller 只會印一行錯誤就中止 —— 先在這裡擋,
+    # 給出人看得懂的說法。(Windows 官方 Python 預設就含 tkinter。)
+    try:
+        import tkinter                                   # noqa: F401
+    except ImportError:
+        line("  找不到 tkinter —— 啟動畫面需要它提供 Tcl/Tk。")
+        line("  Windows:重新安裝 Python 並勾選「tcl/tk and IDLE」。")
+        line("  Linux:  安裝 python3-tk 套件。")
+        sys.exit(1)
+
     if not os.path.exists(venv_python()):
         run([sys.executable, "-m", "venv", VENV], "建立打包用虛擬環境")
 
