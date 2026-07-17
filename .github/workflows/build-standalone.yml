@@ -96,8 +96,12 @@ jobs:
             throw "splash transparency (magenta color key) not applied - a rectangle would show"
           }
           # 有文字圖層 = bootloader 會把解壓縮中的檔名 (zlib1.dll…) 寫上畫面。
-          # 那是它內建的行為,關不掉,唯一的辦法就是不要文字圖層。
-          if (Select-String -Path $tcl -Pattern "status_text" -Quiet) {
+          # 那是它內建的行為,關不掉,唯一的辦法就是不要文字圖層 (spec 不給 text_pos)。
+          #
+          # 認「create text」而不是「status_text」:後者是 IPC 指令處理器的一部分,
+          # 不管有沒有文字圖層都會出現在腳本裡 —— 拿它當證據會永遠誤判。
+          # 只有真的建立了文字圖層,Tcl 才會有 canvas 的 create text 與 font create。
+          if (Select-String -Path $tcl -Pattern "create text" -Quiet) {
             throw "splash has a text layer - bootloader would print dll names on it"
           }
           Write-Host "Splash screen OK."
