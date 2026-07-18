@@ -1,0 +1,40 @@
+# -*- coding: utf-8 -*-
+# Windows 的版本資源。PyInstaller 會把它嵌進 exe (見 pm.spec 的 version=)。
+#
+# 為什麼要有:沒有版本資源的 exe,在檔案總管的「內容 → 詳細資料」是一片空白,
+# 工作管理員裡也只是一個沒有描述的行程。對使用者而言那看起來就像來路不明的
+# 東西 —— 而這支程式本來就要請他們「相信它、點兩下」。SmartScreen 的信譽
+# 問題不是靠這個解決的 (那需要簽章),但至少讓 exe 自己說得出它是誰。
+#
+# 版號改這裡:filevers/prodvers 是給程式讀的 (必須是四個數字),
+# FileVersion/ProductVersion 字串是給人看的。兩邊要一致。
+
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,          # VOS_NT_WINDOWS32
+    fileType=0x1,        # VFT_APP
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          # 0x0404 = 繁體中文 (台灣),1200 = Unicode
+          '040404b0',
+          [StringStruct('CompanyName', 'John Wang 與貢獻者'),
+           StringStruct('FileDescription', '專案管理系統 — 單機版'),
+           StringStruct('FileVersion', '1.0.0.0'),
+           StringStruct('InternalName', 'pm-system'),
+           StringStruct('LegalCopyright', '© 2026 John Wang 與貢獻者 · MIT License'),
+           StringStruct('OriginalFilename', '專案管理系統.exe'),
+           StringStruct('ProductName', '專案管理系統'),
+           StringStruct('ProductVersion', '1.0.0.0')])
+      ]),
+    VarFileInfo([VarStruct('Translation', [0x0404, 1200])])
+  ]
+)

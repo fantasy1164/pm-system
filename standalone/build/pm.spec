@@ -99,6 +99,11 @@ exe = EXE(
     a.datas,
     name="專案管理系統",
     icon=(os.path.join(HERE, "app.ico") if sys.platform == "win32" else None),
+    # 版本資源:讓 exe 在「內容 → 詳細資料」與工作管理員裡說得出自己是誰。
+    # 這不會解決 SmartScreen 的信譽問題 (那要簽章),但一個什麼都不寫的 exe
+    # 更沒有理由被信任。
+    version=(os.path.join(HERE, "version_info.txt")
+             if sys.platform == "win32" else None),
     console=False,         # 不出現黑視窗;停止/錯誤改由系統匣與訊息框負責
     upx=False,             # UPX 壓縮常觸發防毒誤判,不值得省那點體積
     disable_windowed_traceback=False,

@@ -10,10 +10,53 @@
 |---|---|---|
 | 用途 | 多人協作 | 單機離線使用 |
 | 部署 | GitHub Pages + Render | 一台 Windows 電腦 |
-| 啟用方式 | 預設 | 環境變數 `PM_MODE=standalone` |
-| 需要網路 | 是 | 否（僅安裝時需要） |
+| 啟用方式 | 預設 | 單一執行檔（`PM_MODE=standalone`） |
+| 需要網路 | 是 | **完全不需要** |
+| 安裝 | 無（開網頁即可） | 無（點兩下執行檔即可，不必安裝 Python） |
 
-單機版的安裝與使用請參閱 [`standalone/README-standalone.md`](standalone/README-standalone.md)。
+單機版的取得與使用請參閱 [`standalone/README-standalone.md`](standalone/README-standalone.md)。
+
+## 系統畫面
+
+> 以下畫面中的專案、契約號、金額與人名皆為示範用的虛構資料。
+
+### 進度總表
+
+一個年度一頁。專案依狀態分組（進行中／未成案／已結案），欄位涵蓋契約號、SO number、
+履約起迄、工期、參與人員、決標金額與各年度預估認列。日期以民國年顯示。
+
+![進度總表](docs/screenshots/table.png)
+
+### 甘特圖
+
+同一批資料自動產生期程圖，不需另外維護。虛線為未成案、灰色為已結案，
+里程碑標在各專案的時間軸上。
+
+![甘特圖](docs/screenshots/gantt.png)
+
+### 保固總表
+
+履約結束後自動進入保固追蹤，依保固年數推算保固迄日，區分保固中與已完保。
+
+![保固總表](docs/screenshots/warranty.png)
+
+### 專案編輯
+
+單一表單維護基本資料、契約資訊、里程碑、跨年度預算認列與通知設定。
+
+![專案編輯](docs/screenshots/form.png)
+
+### 訊息提醒
+
+畫面上有一顆可拖曳的鈴鐺浮動按鈕（位置會記住）。系統發出的提醒——里程碑到期、
+專案結案、註冊審核、權限異動等——都納管在這裡，依系統／專案分頁。有未確認訊息時
+鈴鐺會閃爍光暈並循環播放提示音（可靜音），確認後自動隱藏，全部確認才停止閃爍。
+可切換顯示歷史訊息。
+
+線上版的提醒同時寄送 email；單機版沒有 email，鈴鐺就是它唯一的主動提醒管道。
+每位使用者各自有已讀狀態——管理者看得到全部提醒，其他人只看與自己相關的。
+
+![訊息提醒](docs/screenshots/bell.png)
 
 ## 專案狀態
 
@@ -55,10 +98,12 @@ Copyright © 2026 John Wang and contributors.
 - 異動稽核紀錄
 - 系統及專案通知設定
 - Gmail 通知
+- 可拖曳的鈴鐺提醒：未確認訊息閃爍光暈＋循環提示音，每人各自已讀狀態
 - Google Drive 版本化資料庫備份
 - 深色與淺色主題
 - 響應式桌面及行動裝置介面
 - 線上多人版與離線單機版共用同一套程式碼
+- 單機版打包為單一執行檔：免安裝 Python、點兩下即用、系統匣常駐
 
 ## 系統架構
 
@@ -104,11 +149,17 @@ Flask + Waitress （127.0.0.1，僅綁本機）
     │   └── 由後端直接服務，前端因此改用相對路徑 /api
     │
     ├── SQLite
-    │   └── standalone/data/pm.sqlite （唯一真實資料來源）
+    │   └── %LOCALAPPDATA%\專案管理系統\data\pm.sqlite （唯一真實資料來源）
     │
     └── 本機資料夾
-        └── standalone/backups/ 版本化快照
+        └── %LOCALAPPDATA%\專案管理系統\backups\ 版本化快照
 ```
+
+單機版以單一執行檔散布（PyInstaller onefile）。執行檔內含 Python 直譯器與全部相依，
+使用者不需要安裝任何東西；**資料則固定存放於 `%LOCALAPPDATA%\專案管理系統\`，
+與執行檔完全脫鉤** —— 執行檔可以隨意擺放、刪除或換新版，資料不受影響。
+
+以原始碼執行時（`standalone/start.bat`）資料仍在 `standalone/data/`，行為與早期版本一致。
 
 單機版不連線任何外部服務：不做 Google 登入、不呼叫 Google Drive API、不寄送 Gmail。
 
@@ -150,6 +201,14 @@ Flask + Waitress （127.0.0.1，僅綁本機）
 | PyJWT | JWT 編碼與驗證 | MIT |
 | google-auth | Google ID Token 驗證 | Apache-2.0 |
 | Werkzeug | WSGI 工具與 ProxyFix | BSD-3-Clause |
+
+單機版的執行檔另外內含 Python 直譯器（PSF-2.0）、Tcl/Tk（BSD 類，啟動動畫用）、
+SQLite（公有領域）與 PyInstaller 的 bootloader（GPL-2.0，**含 Bootloader Exception**，
+明確允許嵌入並散布，不對本專案產生 GPL 限制）。
+
+**執行檔內不含任何 copyleft 元件**：系統匣圖示以 Python 標準庫的 ctypes 直接呼叫
+Win32 API 實作（`standalone/tray_win32.py`），而非採用 LGPL 授權的 pystray；
+Google 與 HTTP 相關套件在單機版用不到，已排除於打包之外，連帶排除了 MPL-2.0 的 certifi。
 
 各第三方元件仍由其原作者或權利人持有著作權，並依各自的授權條款使用。
 
@@ -275,13 +334,27 @@ pm-system/
 │   ├── install.bat
 │   ├── install.py
 │   ├── start.bat
-│   ├── serve.py
+│   ├── serve.py           # 啟動器：模式、換 port、開瀏覽器、啟動動畫、系統匣
+│   ├── tray_win32.py      # 系統匣圖示（ctypes 直接呼叫 Win32，不引入 copyleft）
 │   ├── requirements.txt
 │   ├── README-standalone.md
-│   ├── data/              # 使用者資料庫（不進 Git）
+│   ├── build/             # 打包成單一 exe 的材料
+│   │   ├── build.bat      # 開發者用：在本機打包
+│   │   ├── build.py
+│   │   ├── pm.spec        # PyInstaller 規格
+│   │   ├── version_info.txt
+│   │   ├── make_icon.py   # 產生 app.ico
+│   │   ├── make_splash.py # 產生啟動動畫的逐格圖
+│   │   ├── app.ico
+│   │   └── splash_00..07.png
+│   ├── data/              # 使用者資料庫（不進 Git；exe 版改用 %LOCALAPPDATA%）
 │   └── backups/           # 本機版本化快照（不進 Git）
+├── docs/
+│   └── screenshots/       # README 用的系統畫面
 ├── .github/
 │   └── workflows/
+│       ├── deploy-pages.yml       # 前端部署到 GitHub Pages
+│       └── build-standalone.yml   # 打包單機版 exe（手動觸發或打 tag）
 ├── .gitattributes
 ├── DEPLOY.md
 ├── render.yaml

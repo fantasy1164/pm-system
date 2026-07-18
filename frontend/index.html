@@ -245,6 +245,72 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
   .site-footer .sep.hide-mobile{display:none}
 }
 
+/* ============================== 訊息提醒鈴鐺 ============================== */
+.bell-fab{
+  position:fixed; z-index:900; width:52px; height:52px; border-radius:50%;
+  display:none; align-items:center; justify-content:center; cursor:grab;
+  background:var(--navy); color:#fff; box-shadow:0 4px 14px rgba(0,0,0,.28);
+  user-select:none; touch-action:none;
+}
+.bell-fab:active{ cursor:grabbing; }
+.bell-fab .bell-icon{ position:relative; z-index:1; }
+/* 光暈:有未確認訊息時漸強/減弱閃爍。放在按鈕底下,不影響點擊 */
+.bell-glow{
+  position:absolute; inset:-6px; border-radius:50%; pointer-events:none;
+  opacity:0; background:radial-gradient(circle, var(--amber) 0%, transparent 70%);
+}
+.bell-fab.alert .bell-glow{ animation:bellGlow 1.6s ease-in-out infinite; }
+@keyframes bellGlow{
+  0%,100%{ opacity:0; transform:scale(.85); }
+  50%    { opacity:.85; transform:scale(1.25); }
+}
+/* 有未確認時鈴鐺本體也輕輕擺動,強化「有事」的感覺 */
+.bell-fab.alert .bell-icon{ animation:bellSwing 1.6s ease-in-out infinite; transform-origin:top center; }
+@keyframes bellSwing{
+  0%,100%{ transform:rotate(0); } 15%{ transform:rotate(12deg); }
+  30%{ transform:rotate(-10deg); } 45%{ transform:rotate(6deg); } 60%{ transform:rotate(0); }
+}
+.bell-count{
+  position:absolute; top:-4px; right:-4px; min-width:20px; height:20px; padding:0 5px;
+  border-radius:10px; background:var(--red); color:#fff; font-size:12px; font-weight:700;
+  display:flex; align-items:center; justify-content:center; z-index:2; box-sizing:border-box;
+}
+.bell-panel{
+  position:fixed; z-index:901; width:340px; max-width:calc(100vw - 24px);
+  max-height:min(70vh,520px); display:flex; flex-direction:column;
+  background:var(--panel); color:var(--ink); border:1px solid var(--line);
+  border-radius:12px; box-shadow:0 10px 34px rgba(0,0,0,.32); overflow:hidden;
+}
+.bell-head{ display:flex; align-items:center; justify-content:space-between;
+  padding:8px 10px; border-bottom:1px solid var(--line); background:var(--thead); }
+.bell-tabs{ display:flex; gap:4px; }
+.bell-tab{ border:0; background:transparent; color:var(--thead-ink); opacity:.7;
+  padding:5px 12px; border-radius:6px; cursor:pointer; font-size:14px; font-weight:600; }
+.bell-tab.active{ opacity:1; background:rgba(255,255,255,.16); }
+.bell-tool{ border:0; background:transparent; cursor:pointer; font-size:18px; line-height:1;
+  padding:4px 6px; border-radius:6px; }
+.bell-tool.muted{ opacity:.45; }
+.bell-sub{ display:flex; align-items:center; justify-content:space-between;
+  padding:7px 12px; border-bottom:1px solid var(--line); font-size:13px; }
+.bell-hist{ display:flex; align-items:center; gap:6px; color:var(--gray); cursor:pointer; }
+.bell-ackall{ border:1px solid var(--line); background:var(--chip); color:var(--ink);
+  padding:3px 10px; border-radius:6px; cursor:pointer; font-size:13px; }
+.bell-ackall:hover{ background:var(--hover); }
+.bell-list{ overflow-y:auto; padding:4px 0; }
+.bell-item{ display:flex; gap:10px; padding:10px 12px; border-bottom:1px solid var(--line);
+  align-items:flex-start; }
+.bell-item.read{ opacity:.55; }
+.bell-dot{ flex:0 0 auto; width:8px; height:8px; border-radius:50%; margin-top:6px;
+  background:var(--amber); }
+.bell-item.read .bell-dot{ background:var(--line); }
+.bell-body{ flex:1; min-width:0; }
+.bell-subj{ font-size:13.5px; line-height:1.4; word-break:break-word; }
+.bell-meta{ font-size:11.5px; color:var(--gray); margin-top:3px; }
+.bell-ack{ flex:0 0 auto; border:1px solid var(--line); background:transparent;
+  color:var(--teal); border-radius:6px; padding:2px 8px; cursor:pointer; font-size:12px; }
+.bell-ack:hover{ background:var(--hover); }
+.bell-empty{ padding:28px 16px; text-align:center; color:var(--gray); font-size:13px; }
+@media (max-width:480px){ .bell-panel{ width:calc(100vw - 24px); } }
 </style>
 </head>
 <body>
@@ -286,6 +352,33 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
 
 
 <div id="toast" role="status"></div>
+
+<!-- ============================ 訊息提醒鈴鐺 ============================ -->
+<!-- 浮動按鈕:可拖曳,位置存 localStorage;有未確認訊息時光暈閃爍 -->
+<div id="bellFab" class="bell-fab" title="訊息提醒" role="button" tabindex="0" aria-label="訊息提醒">
+  <span class="bell-glow" aria-hidden="true"></span>
+  <svg class="bell-icon" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+    <path d="M12 2a1 1 0 0 1 1 1v.6a6 6 0 0 1 5 5.9v3l1.6 3.2A1 1 0 0 1 18.7 17H5.3a1 1 0 0 1-.9-1.3L6 12.5v-3a6 6 0 0 1 5-5.9V3a1 1 0 0 1 1-1Z" fill="currentColor"/>
+    <path d="M9.5 19a2.5 2.5 0 0 0 5 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  </svg>
+  <span id="bellCount" class="bell-count" hidden>0</span>
+</div>
+
+<!-- 訊息清單面板 -->
+<div id="bellPanel" class="bell-panel" hidden role="dialog" aria-label="訊息清單">
+  <div class="bell-head">
+    <div class="bell-tabs" role="tablist">
+      <button class="bell-tab active" data-scope="system" role="tab">系統</button>
+      <button class="bell-tab" data-scope="project" role="tab">專案</button>
+    </div>
+    <button id="bellMute" class="bell-tool" title="靜音提示音">🔔</button>
+  </div>
+  <div class="bell-sub">
+    <label class="bell-hist"><input type="checkbox" id="bellHistChk"> 顯示歷史訊息</label>
+    <button id="bellAckAll" class="bell-ackall">全部確認</button>
+  </div>
+  <div id="bellList" class="bell-list"></div>
+</div>
 
 <script>
 "use strict";
@@ -718,9 +811,13 @@ function renderRegisterForm(reg) {
     errBox, submit);
   $("#content").replaceChildren(box);
 }
+let bellStarted = false;
 async function enterApp() {
   renderUserChip(); applyPerms(); resetIdle();
   await refresh();
+  // 進入應用後才啟動鈴鐺 (登入畫面不顯示)。單機版也顯示 —— 它取代 email
+  // 的角色,是單機版唯一的主動提醒管道。只啟動一次,避免重覆輪詢。
+  if (!bellStarted) { bellStarted = true; Bell.start(); }
 }
 /* 閒置 30 分鐘自動登出 (token 到期為後端硬上限,此為前端體驗) */
 let idleT = null;
@@ -2197,6 +2294,219 @@ window.addEventListener("resize", () => {
 });
 
 /* ============================== 啟動 ============================== */
+/* ============================== 訊息提醒鈴鐺 ============================== */
+/* 一個自足模組:輪詢後端未確認通知,驅動浮動按鈕的閃爍與循環提示音,
+   面板依系統/專案分頁,可確認、可看歷史、可靜音。位置與靜音狀態存 localStorage。 */
+const Bell = (function () {
+  const fab = document.getElementById("bellFab");
+  const panel = document.getElementById("bellPanel");
+  const listEl = document.getElementById("bellList");
+  const countEl = document.getElementById("bellCount");
+  const muteBtn = document.getElementById("bellMute");
+  const histChk = document.getElementById("bellHistChk");
+  const ackAllBtn = document.getElementById("bellAckAll");
+
+  let scope = "system";          // 目前分頁
+  let unread = 0;                // 未確認總數 (跨兩個分頁)
+  let muted = localStorage.getItem("pm_bell_mute") === "1";
+  let pollTimer = null, chimeTimer = null, dragging = false;
+
+  /* ---------- 提示音:純合成,不引入任何音檔 (無版權疑慮) ----------
+     瀏覽器的 autoplay 政策:使用者「與頁面互動過」之前放不出聲音。所以
+     AudioContext 一律等第一次點擊才建立/resume —— 這不是選擇,是硬限制。
+     循環提示採「間隔重複」而非連續響:每隔十幾秒一次短音,提示而不擾人。 */
+  let actx = null;
+  function ensureAudio() {
+    if (!actx) {
+      try { actx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (_e) { return null; }
+    }
+    if (actx.state === "suspended") actx.resume();
+    return actx;
+  }
+  function chime() {
+    if (muted) return;
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    // 兩個短音的「叮咚」,用 gain 包絡避免爆音
+    [[880, 0], [660, 0.16]].forEach(([f, t]) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sine"; o.frequency.value = f;
+      const s = ctx.currentTime + t;
+      g.gain.setValueAtTime(0, s);
+      g.gain.linearRampToValueAtTime(0.22, s + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, s + 0.32);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(s); o.stop(s + 0.34);
+    });
+  }
+  function startChimeLoop() {
+    if (chimeTimer) return;
+    chime();                                   // 立刻響一次
+    chimeTimer = setInterval(chime, 20000);    // 之後每 20 秒提示一次
+  }
+  function stopChimeLoop() {
+    if (chimeTimer) { clearInterval(chimeTimer); chimeTimer = null; }
+  }
+
+  function applyMuteUI() {
+    muteBtn.textContent = muted ? "🔕" : "🔔";
+    muteBtn.classList.toggle("muted", muted);
+    muteBtn.title = muted ? "取消靜音" : "靜音提示音";
+    if (muted) stopChimeLoop(); else if (unread > 0) startChimeLoop();
+  }
+
+  /* ---------- 閃爍與計數 ---------- */
+  function applyAlert() {
+    fab.classList.toggle("alert", unread > 0);   // 有未確認才閃爍光暈
+    countEl.hidden = unread === 0;
+    countEl.textContent = unread > 99 ? "99+" : String(unread);
+    if (unread > 0 && !muted) startChimeLoop(); else stopChimeLoop();
+  }
+
+  /* ---------- 位置:拖曳 + 記住 ---------- */
+  function clampPos(x, y) {
+    const m = 6, w = fab.offsetWidth, h = fab.offsetHeight;
+    return [Math.max(m, Math.min(x, innerWidth - w - m)),
+            Math.max(m, Math.min(y, innerHeight - h - m))];
+  }
+  function placeFab(x, y) {
+    [x, y] = clampPos(x, y);
+    fab.style.left = x + "px"; fab.style.top = y + "px";
+    fab.style.right = "auto"; fab.style.bottom = "auto";
+    positionPanel();
+  }
+  function loadPos() {
+    const saved = localStorage.getItem("pm_bell_pos");
+    if (saved) { try { const p = JSON.parse(saved); return placeFab(p.x, p.y); } catch (_e) {} }
+    placeFab(innerWidth - 52 - 24, innerHeight - 52 - 24);   // 預設右下
+  }
+  function savePos() {
+    localStorage.setItem("pm_bell_pos",
+      JSON.stringify({ x: fab.offsetLeft, y: fab.offsetTop }));
+  }
+  // 面板貼著按鈕開:按鈕在上半部就往下開,在下半部就往上開
+  function positionPanel() {
+    if (panel.hidden) return;
+    const r = fab.getBoundingClientRect();
+    const pw = panel.offsetWidth, ph = panel.offsetHeight, m = 8;
+    let left = Math.min(r.left, innerWidth - pw - m); left = Math.max(m, left);
+    let top = (r.top < innerHeight / 2) ? r.bottom + m : r.top - ph - m;
+    top = Math.max(m, Math.min(top, innerHeight - ph - m));
+    panel.style.left = left + "px"; panel.style.top = top + "px";
+  }
+
+  // 拖曳:用 pointer 事件,同時支援滑鼠與觸控。移動超過門檻才算拖曳,
+  // 否則視為點擊 (開關面板) —— 不然使用者永遠沒辦法「只是按一下」。
+  function initDrag() {
+    let sx, sy, ox, oy, moved;
+    fab.addEventListener("pointerdown", (e) => {
+      dragging = true; moved = false;
+      sx = e.clientX; sy = e.clientY; ox = fab.offsetLeft; oy = fab.offsetTop;
+      fab.setPointerCapture(e.pointerId);
+    });
+    fab.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (!moved && Math.hypot(dx, dy) < 5) return;   // 門檻內不算拖
+      moved = true; placeFab(ox + dx, oy + dy);
+    });
+    fab.addEventListener("pointerup", (e) => {
+      dragging = false;
+      fab.releasePointerCapture(e.pointerId);
+      if (moved) savePos();
+      else togglePanel();                              // 沒移動 = 點擊
+    });
+  }
+
+  /* ---------- 面板 ---------- */
+  function togglePanel() { panel.hidden ? open() : close(); }
+  function open() {
+    ensureAudio();                 // 借這次使用者互動解鎖音訊
+    panel.hidden = false;
+    positionPanel();
+    render();
+  }
+  function close() { panel.hidden = true; }
+
+  async function render() {
+    const hist = histChk.checked;
+    let data;
+    try { data = await api("/notify/bell" + (hist ? "?history=1" : "")); }
+    catch (_e) { return; }
+    unread = data.unread; applyAlert();
+    const items = data.items.filter((o) => o.scope === scope);
+    if (!items.length) {
+      listEl.innerHTML = '<div class="bell-empty">' +
+        (hist ? "沒有訊息" : "沒有待確認的訊息") + "</div>";
+      return;
+    }
+    listEl.innerHTML = items.map((o) => {
+      const cls = "bell-item" + (o.read ? " read" : "");
+      const ack = o.read ? "" :
+        `<button class="bell-ack" data-id="${o.id}">確認</button>`;
+      return `<div class="${cls}"><span class="bell-dot"></span>` +
+        `<div class="bell-body"><div class="bell-subj">${esc(o.subject)}</div>` +
+        `<div class="bell-meta">${o.created_at}</div></div>${ack}</div>`;
+    }).join("");
+  }
+
+  async function ack(id) {
+    try { await api("/notify/bell/" + id + "/ack", { method: "POST" }); }
+    catch (_e) { return; }
+    await render();
+  }
+  async function ackAll() {
+    try { await api("/notify/bell/ack-all", { method: "POST" }); }
+    catch (_e) { return; }
+    await render();
+  }
+
+  async function poll() {
+    try {
+      const data = await api("/notify/bell");
+      unread = data.unread; applyAlert();
+      if (!panel.hidden) render();
+    } catch (_e) { /* 離線/未登入:靜默,下一輪再試 */ }
+  }
+
+  function start() {
+    fab.style.display = "flex";    // 進入應用才顯示 (登入畫面不出現)
+    loadPos(); applyMuteUI(); initDrag();
+    // 分頁切換
+    panel.querySelectorAll(".bell-tab").forEach((b) => {
+      b.addEventListener("click", () => {
+        panel.querySelectorAll(".bell-tab").forEach((x) => x.classList.remove("active"));
+        b.classList.add("active"); scope = b.dataset.scope; render();
+      });
+    });
+    histChk.addEventListener("change", render);
+    ackAllBtn.addEventListener("click", ackAll);
+    muteBtn.addEventListener("click", () => {
+      muted = !muted; localStorage.setItem("pm_bell_mute", muted ? "1" : "0");
+      applyMuteUI();
+    });
+    listEl.addEventListener("click", (e) => {
+      const b = e.target.closest(".bell-ack");
+      if (b) ack(Number(b.dataset.id));
+    });
+    // 點面板外收起
+    document.addEventListener("pointerdown", (e) => {
+      if (panel.hidden) return;
+      if (!panel.contains(e.target) && !fab.contains(e.target)) close();
+    });
+    fab.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); togglePanel(); }
+    });
+    addEventListener("resize", () => { loadPos(); positionPanel(); });
+
+    poll();
+    pollTimer = setInterval(poll, 30000);   // 每 30 秒輪詢一次
+  }
+
+  return { start };
+})();
+
 (async function boot() {
   try {
     await waitBackend();

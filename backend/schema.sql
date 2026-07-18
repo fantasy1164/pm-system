@@ -103,6 +103,21 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications (created_at DESC);
 
+-- 每位使用者對每則通知的「已確認」狀態 (鈴鐺清單用)。
+--
+-- 為什麼另開一張表,而不是在 notifications 加一個 read 欄位:一則通知會發給
+-- 多個人,已讀是「每人各自」的 —— A 確認了不代表 B 確認了。用 (通知, 使用者)
+-- 的關聯表才表達得出來。沒有列 = 未讀;有列 = 已讀 (連同確認時間)。
+--
+-- 單機版沒有登入,g.user 為 None,一律以 user_id = 0 代表「本機唯一使用者」。
+CREATE TABLE IF NOT EXISTS notification_reads (
+    notif_id    INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL,      -- 0 = 單機版本機使用者
+    read_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (notif_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notif_reads_user ON notification_reads (user_id);
+
 -- 專案里程碑
 CREATE TABLE IF NOT EXISTS milestones (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -233,12 +233,20 @@ MIGRATIONS = [
 
 def init_db():
     db = sqlite3.connect(DB_PATH)
+    db.execute("PRAGMA foreign_keys = ON")
     with open(SCHEMA_PATH, encoding="utf-8") as f:
         db.executescript(f.read())
     for table, col, typ in MIGRATIONS:
         cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
         if col not in cols:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+    # 清掉孤兒的已讀記錄。正常情況 ON DELETE CASCADE 會處理,但那要連線有開
+    # foreign_keys pragma —— 備份還原等路徑用的是另開的連線,不保證開了。
+    # 更要命的是 SQLite 會重用 id:殘留的孤兒 read 記錄可能撞上「未來某則新
+    # 通知」的 id,害那則新通知一建立就被當成已讀、使用者永遠看不到。開機
+    # 清一次,把這個隱患從根上斷掉 (init_db 每次開機必跑,是最穩的落點)。
+    db.execute("DELETE FROM notification_reads WHERE notif_id NOT IN"
+               " (SELECT id FROM notifications)")
     db.commit()
     # 分包遷移:既有子表的 team_id 補成該專案的主包 team_id (無縫接軌,
     # 既有專案無分包關係、行為完全不變)
@@ -1486,6 +1494,105 @@ def put_notify_matrix(team_id):
 
 
 # ------------------------------------------------------- 通知歷史
+def _bell_uid():
+    """鈴鐺已讀狀態綁定的使用者 id。
+
+    單機版沒有登入 (g.user 不存在),全機只有一個人,用固定的 0 代表。
+    線上版一律有登入使用者 (VIEW 已擋),取其真實 id。
+    """
+    u = getattr(g, "user", None)
+    return u["id"] if u else 0
+
+
+def _bell_visible_sql():
+    """回傳 (WHERE 片段, 參數):限定「這位使用者看得到」的通知。
+
+    規則 (與寄信一致,見需求討論):
+      - 管理者、或單機版本機使用者 → 看得到全部
+      - 其他人 → 只看 recipients 裡含自己 email / notify_email 的那些
+    recipients 是逗號分隔的 email 字串,用 LIKE 包逗號比對,避免 a@x.com
+    誤中 aa@x.com;頭尾各補一個逗號讓邊界一致。
+    """
+    u = getattr(g, "user", None)
+    if u is None or u["role"] == "admin":
+        return "1", []
+    db = get_db()
+    row = db.execute("SELECT email, notify_email FROM users WHERE id = ?",
+                     (u["id"],)).fetchone()
+    mails = [m for m in (row["email"], row["notify_email"]) if m] if row else []
+    if not mails:
+        return "0", []          # 沒有任何信箱 → 看不到任何專案/系統通知
+    clauses = ["(',' || replace(recipients,' ','') || ',') LIKE ?" for _ in mails]
+    params = [f"%,{m},%" for m in mails]
+    return "(" + " OR ".join(clauses) + ")", params
+
+
+@app.get("/api/notify/bell")
+@VIEW
+def notify_bell():
+    """鈴鐺清單。預設只回「這位使用者未確認」的通知;history=1 時連已確認的
+    也一起回 (清單上方的『顯示歷史訊息』)。每則附 read 欄位供前端分辨。"""
+    db = get_db()
+    uid = _bell_uid()
+    show_history = request.args.get("history") == "1"
+    vis_sql, vis_args = _bell_visible_sql()
+    sys_keys = [t["key"] for t in SYSTEM_NOTIFY_TYPES]
+    sys_ph = ",".join("?" * len(sys_keys))
+    # 只納管「實際成立」的通知:sent (線上真的寄了) 與 dryrun (單機版記錄但沒寄)。
+    # failed / skipped 不是給使用者看的提醒,是維運紀錄,留在 history 端點。
+    sql = (f"SELECT n.id, n.ntype, n.project_id, n.subject, n.status,"
+           f" n.created_at, r.read_at,"
+           f" CASE WHEN n.ntype IN ({sys_ph}) THEN 'system' ELSE 'project' END"
+           f" AS scope"
+           f" FROM notifications n"
+           f" LEFT JOIN notification_reads r"
+           f" ON r.notif_id = n.id AND r.user_id = ?"
+           f" WHERE n.status IN ('sent','dryrun') AND {vis_sql}")
+    args = list(sys_keys) + [uid] + vis_args
+    if not show_history:
+        sql += " AND r.read_at IS NULL"
+    sql += " ORDER BY n.id DESC LIMIT 200"
+    rows = db.execute(sql, args).fetchall()
+    out = [dict(r) for r in rows]
+    for o in out:
+        o["read"] = o.pop("read_at") is not None
+    unread = sum(1 for o in out if not o["read"])
+    return jsonify({"items": out, "unread": unread})
+
+
+@app.post("/api/notify/bell/<int:nid>/ack")
+@VIEW
+def notify_bell_ack(nid):
+    """確認單一通知 (寫入這位使用者的已讀)。冪等:重複確認不報錯。"""
+    db = get_db()
+    exists = db.execute("SELECT 1 FROM notifications WHERE id = ?",
+                        (nid,)).fetchone()
+    if not exists:
+        return jsonify({"error": "找不到通知"}), 404
+    db.execute("INSERT OR IGNORE INTO notification_reads (notif_id, user_id)"
+               " VALUES (?, ?)", (nid, _bell_uid()))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/notify/bell/ack-all")
+@VIEW
+def notify_bell_ack_all():
+    """一鍵確認這位使用者目前看得到的所有未讀 —— 只確認「看得到的」,
+    絕不替他清掉不屬於他的通知 (可見性條件與清單完全一致)。"""
+    db = get_db()
+    uid = _bell_uid()
+    vis_sql, vis_args = _bell_visible_sql()
+    db.execute(
+        f"INSERT OR IGNORE INTO notification_reads (notif_id, user_id)"
+        f" SELECT n.id, ? FROM notifications n"
+        f" WHERE n.status IN ('sent','dryrun') AND {vis_sql}",
+        [uid] + vis_args)
+    n = db.total_changes
+    db.commit()
+    return jsonify({"ok": True, "acked": n})
+
+
 @app.get("/api/notify/history")
 @VIEW
 def notify_history():
