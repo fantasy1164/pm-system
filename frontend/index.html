@@ -281,6 +281,9 @@ select{background:var(--panel);color:var(--ink);border:1px solid var(--line);bor
   background:var(--panel); color:var(--ink); border:1px solid var(--line);
   border-radius:12px; box-shadow:0 10px 34px rgba(0,0,0,.32); overflow:hidden;
 }
+/* hidden 屬性只是弱預設的 display:none,會被上面的 display:flex 蓋過 —— 那正是
+   面板「明明 hidden 卻一直顯示」的原因。明確讓 hidden 強制隱藏。 */
+.bell-panel[hidden]{ display:none; }
 .bell-head{ display:flex; align-items:center; justify-content:space-between;
   padding:8px 10px; border-bottom:1px solid var(--line); background:var(--thead); }
 .bell-tabs{ display:flex; gap:4px; }
@@ -2370,11 +2373,23 @@ const Bell = (function () {
     return [Math.max(m, Math.min(x, innerWidth - w - m)),
             Math.max(m, Math.min(y, innerHeight - h - m))];
   }
+  // 吸附到最近的邊:比較按鈕中心到上下左右四邊的距離,貼到最短的那一邊。
+  function snapToEdge(x, y) {
+    const m = 6, w = fab.offsetWidth, h = fab.offsetHeight;
+    const cx = x + w / 2, cy = y + h / 2;
+    const dl = cx, dr = innerWidth - cx, dt = cy, db = innerHeight - cy;
+    const min = Math.min(dl, dr, dt, db);
+    if (min === dl) x = m;
+    else if (min === dr) x = innerWidth - w - m;
+    else if (min === dt) y = m;
+    else y = innerHeight - h - m;
+    return clampPos(x, y);
+  }
   function placeFab(x, y) {
     [x, y] = clampPos(x, y);
     fab.style.left = x + "px"; fab.style.top = y + "px";
     fab.style.right = "auto"; fab.style.bottom = "auto";
-    positionPanel();
+    positionPanel();                 // 面板永遠跟著按鈕 (拖曳中也是)
   }
   function loadPos() {
     const saved = localStorage.getItem("pm_bell_pos");
@@ -2385,7 +2400,8 @@ const Bell = (function () {
     localStorage.setItem("pm_bell_pos",
       JSON.stringify({ x: fab.offsetLeft, y: fab.offsetTop }));
   }
-  // 面板貼著按鈕開:按鈕在上半部就往下開,在下半部就往上開
+  // 面板貼著按鈕開:水平上盡量與按鈕對齊但不超出畫面;垂直上,按鈕在畫面
+  // 上半就往下開、下半就往上開,讓面板總是朝畫面中央展開。
   function positionPanel() {
     if (panel.hidden) return;
     const r = fab.getBoundingClientRect();
@@ -2414,13 +2430,26 @@ const Bell = (function () {
     fab.addEventListener("pointerup", (e) => {
       dragging = false;
       fab.releasePointerCapture(e.pointerId);
-      if (moved) savePos();
-      else togglePanel();                              // 沒移動 = 點擊
+      if (moved) {
+        // 放開時吸附到最近的邊,並記住位置
+        const [x, y] = snapToEdge(fab.offsetLeft, fab.offsetTop);
+        placeFab(x, y); savePos();
+      } else {
+        togglePanel();                               // 沒移動 = 點擊
+      }
     });
   }
 
   /* ---------- 面板 ---------- */
-  function togglePanel() { panel.hidden ? open() : close(); }
+  // suppressOutside:剛用按鈕開關過的這一輪,別讓 document 的「點外面收起」
+  // 也跟著處理同一個事件 —— 否則按鈕的 pointerup 開了面板,document 監聽又
+  // 在同一次互動把它關掉 (或反之),面板看起來就「點了沒反應」。
+  let suppressOutside = false;
+  function togglePanel() {
+    suppressOutside = true;
+    setTimeout(() => { suppressOutside = false; }, 0);
+    panel.hidden ? open() : close();
+  }
   function open() {
     ensureAudio();                 // 借這次使用者互動解鎖音訊
     panel.hidden = false;
@@ -2490,9 +2519,9 @@ const Bell = (function () {
       const b = e.target.closest(".bell-ack");
       if (b) ack(Number(b.dataset.id));
     });
-    // 點面板外收起
+    // 點面板外收起 (但別跟按鈕自己的開關搶同一次互動,見 suppressOutside)
     document.addEventListener("pointerdown", (e) => {
-      if (panel.hidden) return;
+      if (panel.hidden || suppressOutside) return;
       if (!panel.contains(e.target) && !fab.contains(e.target)) close();
     });
     fab.addEventListener("keydown", (e) => {
