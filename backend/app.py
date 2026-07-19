@@ -250,6 +250,28 @@ def init_db():
     db.commit()
     # 分包遷移:既有子表的 team_id 補成該專案的主包 team_id (無縫接軌,
     # 既有專案無分包關係、行為完全不變)
+    # 分包遷移:既有子表的 team_id 補成該專案的主包 team_id (無縫接軌,
+    # 既有專案無分包關係、行為完全不變)。
+    #
+    # 有唯一約束的表 (budget_allocations、project_members) 要先清殘列:若同一
+    # 鍵已經有「主包 team_id」的列、又有一筆 team_id=NULL 的舊殘列,直接把 NULL
+    # 補成主包 id 會讓兩列的唯一鍵相同 → UNIQUE constraint failed,連帶讓整個
+    # 資料庫開不起來。那筆 NULL 是舊版遺留,主包列才是正解,所以補之前先刪掉
+    # 「補上去就會撞」的 NULL 殘列。milestones 沒有這種唯一約束,不受影響。
+    db.execute(
+        "DELETE FROM budget_allocations WHERE team_id IS NULL AND EXISTS ("
+        "  SELECT 1 FROM budget_allocations b2, projects p"
+        "  WHERE p.id = budget_allocations.project_id"
+        "    AND b2.project_id = budget_allocations.project_id"
+        "    AND b2.year = budget_allocations.year"
+        "    AND b2.team_id = p.team_id)")
+    db.execute(
+        "DELETE FROM project_members WHERE team_id IS NULL AND EXISTS ("
+        "  SELECT 1 FROM project_members m2, projects p"
+        "  WHERE p.id = project_members.project_id"
+        "    AND m2.project_id = project_members.project_id"
+        "    AND m2.user_id = project_members.user_id"
+        "    AND m2.team_id = p.team_id)")
     for tbl in ("milestones", "budget_allocations", "project_members"):
         db.execute(
             f"UPDATE {tbl} SET team_id = ("
@@ -1050,10 +1072,20 @@ def init_year(new_year):
              r["nda_date"], r["nda_scan"], r["notes"], r["sort_order"], r["id"]),
         )
         new_id = cur.lastrowid
+        # 複製預算:年度複製只複製專案本身,不複製分包關係,所以新專案是純主包,
+        # 預算全歸新專案的主包 team_id。只取原專案主包 (team_id = 原專案 team_id)
+        # 的預算列來複製 —— 若連分包預算一起塞成主包 team_id,同一年度會出現
+        # 重複鍵而撞 UNIQUE。team_id 用 IS 比對,才涵蓋主包 team_id 為 NULL 的情況
+        # (單機版、或尚未指派團隊的專案)。
+        #
+        # 早期版本這裡漏了 team_id (只選 year, amount),複製出來的預算列 team_id
+        # 變 NULL,與專案主包結構不一致,下次開機的分包遷移把它補成主包 id 後
+        # 撞上既有列 → UNIQUE 崩潰、資料庫開不起來。這就是那個 bug 的源頭。
         db.execute(
-            "INSERT INTO budget_allocations (project_id, year, amount)"
-            " SELECT ?, year, amount FROM budget_allocations"
-            " WHERE project_id = ?", (new_id, r["id"]),
+            "INSERT INTO budget_allocations (project_id, team_id, year, amount)"
+            " SELECT ?, ?, year, amount FROM budget_allocations"
+            " WHERE project_id = ? AND team_id IS ?",
+            (new_id, r["team_id"], r["id"], r["team_id"]),
         )
         write_audit(db, "create", "projects", new_id,
                     {"reason": "年度複製", "copied_from": r["id"],
