@@ -875,7 +875,9 @@ def update_project(pid):
     if new_status == "closed" and old["status"] != "closed":
         proj = db.execute("SELECT id, name, team_id FROM projects"
                           " WHERE id = ?", (pid,)).fetchone()
-        if proj and proj["team_id"]:
+        # 線上版要有 team_id 才有收件人;單機版沒有團隊,但通知仍該進鈴鐺,
+        # 所以單機版放行 (resolve_recipients 會回本機收件人)。
+        if proj and (proj["team_id"] or config.IS_STANDALONE):
             recipients = resolve_recipients(db, proj["team_id"], "project_closed")
             if recipients:
                 subject = f"[專案結案] {proj['name']} 已結案"
@@ -1237,6 +1239,12 @@ NOTIFY_TYPES = [
 ]
 NOTIFY_ROLES = ("pm", "dept_head", "sales", "dev")
 
+# 單機版的通知收件人。單機版沒有真正的使用者信箱,這個值只是讓通知在
+# recipients 欄位有個非空的佔位,好讓它照原邏輯產生並進鈴鐺 (走 dryrun,
+# 不會真的寄信)。前綴 bell: 讓它一眼看得出不是真 email。鈴鐺的可見性判斷
+# 對單機版一律放行 (見 _bell_visible_sql),不靠比對這個值。
+BELL_LOCAL_RECIPIENT = "bell:standalone"
+
 # 系统类通知:不分角色、即时触发、发给事件当事人 (+管理者)。
 # enabled 存 app_settings (key = sysnotify:<key>);预设启用。
 SYSTEM_NOTIFY_TYPES = [
@@ -1343,6 +1351,11 @@ def load_notify_matrix(db, team_id):
 
 def resolve_recipients(db, team_id, ntype):
     """依團隊矩陣勾選的角色,解析出收件 email 清單 (取 notify_email)"""
+    # 單機版沒有登入、沒有團隊、沒有角色矩陣 —— 收件人機制整個不成立。但通知
+    # 本身 (結案、里程碑到期…) 仍該讓那個使用者看到。回一個固定的本機收件人,
+    # 讓通知照原邏輯產生、走 dryrun 進鈴鐺。線上版走下面原本的矩陣邏輯,不受影響。
+    if config.IS_STANDALONE:
+        return [BELL_LOCAL_RECIPIENT]
     matrix = load_notify_matrix(db, team_id)
     roles = [r for r, on in matrix.get(ntype, {}).items() if on]
     if not roles:
@@ -1362,9 +1375,14 @@ def scan_milestone_due(db, today):
     - 主包里程碑 (team_id=主包):用主包 notify_days_before,發給主包+所有 active 分包團隊
     - 分包里程碑 (team_id=分包):用該分包 override 的 notify_days_before,只發該分包團隊"""
     out = []
+    # 線上版只掃有團隊的專案 (收件人來自團隊矩陣);單機版沒有團隊,但里程碑
+    # 提醒仍要進鈴鐺,故單機版不加 team_id 限制。
+    where = "deleted = 0"
+    if not config.IS_STANDALONE:
+        where += " AND team_id IS NOT NULL"
     projs = db.execute(
         "SELECT id, name, team_id, notify_days_before, year"
-        " FROM projects WHERE deleted = 0 AND team_id IS NOT NULL").fetchall()
+        f" FROM projects WHERE {where}").fetchall()
 
     def emit(p, m, lead, team_ids_to_notify, tag):
         due_txt = m["date"]
@@ -1703,8 +1721,19 @@ def notify_run():
                 pass
     set_setting(db, "last_scan_at", now.isoformat(timespec="seconds"))
     db.commit()
+    result = run_scanners(db, now.date())
+    db.commit()
+    BACKUP.mark_dirty()
+    return jsonify(result)
+
+
+def run_scanners(db, today):
+    """跑所有排程掃描 (目前只有里程碑到期),把成立的通知記錄進 notifications。
+
+    抽成獨立函式,讓 notify/run 端點與單機版的「啟動時掃一次」共用同一套邏輯
+    與去重規則。回傳統計 dict。呼叫端負責 commit 與 mark_dirty。
+    """
     dry = config.NOTIFY_DRYRUN
-    today = now.date()
     result = {"scanned": 0, "sent": 0, "skipped": 0, "failed": 0, "dryrun": dry}
     for ntype, scanner in SCANNERS.items():
         for item in scanner(db, today):
@@ -1733,23 +1762,51 @@ def notify_run():
             except Exception as e:
                 _record(db, ntype, item, "failed", str(e)[:300])
                 result["failed"] += 1
-    db.commit()
-    BACKUP.mark_dirty()
-    return jsonify(result)
+    return result
+
+
+def startup_scan():
+    """單機版啟動時掃一次里程碑到期。
+
+    線上版的掃描靠外部排程 (GitHub Actions 等) 定時打 notify/run;單機版離線、
+    沒有排程器,所以改成「每次開程式時自己掃一次」—— 使用者每天開來用的時候,
+    當天該提醒的里程碑就會進鈴鐺。去重靠 dedup_key,重掃不會製造重複 (見
+    run_scanners 與 _record)。只在單機版執行;線上版呼叫此函式是無害的 no-op。
+    """
+    if not config.IS_STANDALONE:
+        return
+    with app.app_context():
+        db = get_db()
+        try:
+            result = run_scanners(db, datetime.now().date())
+            db.commit()
+            BACKUP.mark_dirty()
+            app.logger.info("啟動掃描完成: %s", result)
+        except Exception as e:
+            app.logger.warning("啟動掃描失敗 (不影響服務): %s", e)
 
 
 def _record(db, ntype, item, status, detail):
     # upsert:同一 dedup_key 若已有記錄 (如先前失敗/乾跑),更新其狀態與時間;
     # 否則新增。確保「重試成功」能正確覆蓋為 sent,去重判斷才準確。
-    row = db.execute("SELECT id FROM notifications WHERE dedup_key = ?",
+    row = db.execute("SELECT id, status FROM notifications WHERE dedup_key = ?",
                      (item["dedup_key"],)).fetchone()
     if row:
-        db.execute(
-            "UPDATE notifications SET status = ?, detail = ?, recipients = ?,"
-            " subject = ?, created_at = datetime('now','localtime')"
-            " WHERE id = ?",
-            (status, detail, ",".join(item["recipients"]),
-             item["subject"], row["id"]))
+        # created_at 只在狀態真的改變時才刷新。單機版每次啟動都重掃,若無條件
+        # 更新時間,一則兩週前的里程碑提醒會被刷成「今天開機的時刻」—— 使用者
+        # 會覺得時間錯亂。狀態沒變 (dryrun→dryrun) 就保留原本的產生時間。
+        if row["status"] == status:
+            db.execute(
+                "UPDATE notifications SET detail = ?, recipients = ?,"
+                " subject = ? WHERE id = ?",
+                (detail, ",".join(item["recipients"]), item["subject"], row["id"]))
+        else:
+            db.execute(
+                "UPDATE notifications SET status = ?, detail = ?, recipients = ?,"
+                " subject = ?, created_at = datetime('now','localtime')"
+                " WHERE id = ?",
+                (status, detail, ",".join(item["recipients"]),
+                 item["subject"], row["id"]))
     else:
         db.execute(
             "INSERT INTO notifications (ntype, dedup_key, project_id,"

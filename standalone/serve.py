@@ -617,7 +617,7 @@ def main():
     migrate_legacy_data()
 
     try:
-        from app import app, startup
+        from app import app, startup, startup_scan
     except Exception as e:
         alert("專案管理系統", f"後端載入失敗:{e}")
         return 1
@@ -627,6 +627,11 @@ def main():
     except Exception as e:
         alert("專案管理系統", f"資料庫啟動失敗:{e}")
         return 1
+
+    # 單機版沒有外部排程器,里程碑到期提醒改成「每次啟動掃一次」。放在 startup()
+    # 之後 (資料庫已就緒)、serve() 之前;失敗只記錄、不擋服務 —— 提醒是加值,
+    # 不能讓它拖垮整個系統的啟動。
+    startup_scan()
 
     url = f"http://{HOST}:{port}/"
     say()
