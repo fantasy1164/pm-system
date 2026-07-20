@@ -2171,8 +2171,9 @@ function openModal(p) {
   if (d.is_subcontract_view) {
     const SHARED = new Set(["name", "year", "status", "contract_no", "part_no",
       "so_number", "start_date", "end_date", "kickoff_date", "warranty_years",
-      "team_id", "contract_scan", "nda_date", "nda_scan",
-      "awarded_amount"]);   // 決標金額:分包不可改 (且不顯示主包值)
+      "team_id", "contract_scan", "nda_date", "nda_scan"]);
+    // awarded_amount (決標金額)、participants、notify_days_before、備註、里程碑、
+    // 認列、成員:分包各自獨立可編輯 (決標寫入該團隊 override)
     // participants (其他參與者)、notify_days_before、備註、里程碑:分包各自獨立可編輯
     for (const [k, input] of Object.entries(f))
       if (SHARED.has(k)) input.disabled = true;
@@ -2278,6 +2279,11 @@ function openModal(p) {
     if (!inputYear || inputYear < 90 || inputYear > 200)
       return toast("年度格式不正確 (民國,例 114)", true);
     const payload = {
+      // 明確告訴後端「正在編輯哪個團隊視角的資料」。分包視角送分包團隊 id,
+      // 否則送表單選定的主包團隊。少了這個,管理者/雙棲使用者編輯分包那筆會
+      // 被後端誤判為主包視角,把主包資料整批蓋掉 (嚴重資料 bug)。
+      as_team: d.is_subcontract_view ? d.viewing_team_id
+             : (f.team_id && f.team_id.value ? Number(f.team_id.value) : d.team_id),
       year: isNew ? inputYear : d.year,
       name: f.name.value.trim(), status: f.status.value,
       contract_no: f.contract_no.value.trim(), part_no: f.part_no.value.trim(),

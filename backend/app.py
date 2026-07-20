@@ -489,14 +489,14 @@ def fetch_project(db, pid, force_view=None):
     ).fetchall()
     members = fetch_members(db, pid, vteam)
     d = project_to_dict(row, budgets, ms, members)
-    # 分包視角:備註、提醒天數、其他參與者取該團隊 override (各自獨立);
-    # 決標金額分包不顯示主包值 (清空,不洩漏)
+    # 分包視角:備註、提醒天數、其他參與者、決標金額 取該團隊 override
+    # (各自獨立);分包看不到也不沿用主包的決標金額
     if is_sub:
         ov = fetch_override(db, pid, vteam)
         d["notes"] = ov["notes"] if ov else ""
         d["notify_days_before"] = ov["notify_days_before"] if ov else None
         d["participants"] = ov["participants"] if ov else ""
-        d["awarded_amount"] = None
+        d["awarded_amount"] = ov["awarded_amount"] if ov else None
     # 分包關係資訊 (供前端顯示 label)
     subs = subcontract_teams(db, pid)
     d["subcontract_to"] = subs                    # 主包視角:分包給誰
@@ -532,20 +532,44 @@ def is_subcontract_team(db, pid, team_id, active_only=True):
     return team_id in subcontract_teams(db, pid, active_only)
 
 
-def viewing_team(db, pid, master_team_id):
-    """判定當前請求者用哪個團隊的視角看此專案。
-    - 管理者 / 開發模式:主包視角 (可看全貌)
-    - 主包團隊成員:主包視角
-    - 分包團隊成員:該分包團隊視角 (取其所屬且為此案 active 分包的團隊)
-    回傳 (team_id, is_sub):team_id=該視角團隊;is_sub=是否分包視角"""
+_UNSET = object()   # 區分「未提供」與「明確設為 None」
+
+
+def viewing_team(db, pid, master_team_id, want_team=_UNSET):
+    """判定當前請求者用哪個團隊的視角看/改此專案。
+
+    want_team:請求端明確指定「要以哪個團隊的視角操作」(前端編輯分包那筆時傳入)。
+    這是修正一個嚴重資料 bug 的關鍵 —— 原本純從使用者身分推導視角,導致:
+      - 管理者一律被判為主包視角;他從進度總表點開「分包那筆」編輯,資料卻寫回
+        主包,把主包的參與人員/認列/里程碑/備註全部蓋掉。
+      - 雙棲使用者 (同時在主包與某分包團隊) 同理,永遠被判主包視角。
+    身分只能決定「可以用哪些視角」,不能決定「現在正在用哪個視角」—— 後者只有
+    前端 (使用者點的是哪一筆) 知道。所以改成:前端明確指定 want_team,後端只做
+    權限校驗 (你必須真的屬於/有權管理那個團隊),校驗過就採用。
+
+    回傳 (team_id, is_sub)。"""
     u = getattr(g, "user", None)
+    subs = set(subcontract_teams(db, pid))
+
+    # 明確指定視角:校驗後採用 (管理者可用任一視角;一般人只能用自己團隊的視角)
+    if want_team is not _UNSET and want_team is not None:
+        want_team = int(want_team)
+        is_admin = (u is None) or (u["role"] == "admin")
+        my_teams = set() if is_admin else {r["team_id"] for r in db.execute(
+            "SELECT team_id FROM team_members WHERE user_id = ?", (u["id"],))}
+        if want_team == master_team_id and (is_admin or master_team_id in my_teams):
+            return master_team_id, False
+        if want_team in subs and (is_admin or want_team in my_teams):
+            return want_team, True
+        # 指定了無權的團隊:落回身分推導 (下方),不直接信任前端
+
+    # 未指定 (或指定無效):從身分推導 —— 管理者/主包成員看主包,分包成員看分包
     if u is None or u["role"] == "admin":
         return master_team_id, False
     my_teams = {r["team_id"] for r in db.execute(
         "SELECT team_id FROM team_members WHERE user_id = ?", (u["id"],))}
     if master_team_id in my_teams:
         return master_team_id, False
-    subs = set(subcontract_teams(db, pid))
     mine_sub = my_teams & subs
     if mine_sub:
         return sorted(mine_sub)[0], True     # 使用者屬多個分包團隊時取最小 id
@@ -557,9 +581,6 @@ def fetch_override(db, pid, team_id):
         "SELECT awarded_amount, notes, notify_days_before, participants"
         " FROM project_team_overrides"
         " WHERE project_id = ? AND team_id = ?", (pid, team_id)).fetchone()
-
-
-_UNSET = object()   # 區分「未提供」與「明確設為 None」
 
 
 def upsert_override(db, pid, team_id, awarded_amount=None, notes=None,
@@ -814,7 +835,11 @@ def update_project(pid):
     data = request.get_json(silent=True) or {}
     # 分包視角判定:分包團隊只能改自己的獨立欄位,共享欄位一律唯讀 (硬規則)
     master_team = old["team_id"]
-    vteam, is_sub = viewing_team(db, pid, master_team)
+    # as_team:前端明確指定「正在編輯哪個團隊視角的資料」。這是修正嚴重資料
+    # bug 的關鍵 —— 沒有它,管理者/雙棲使用者編輯分包那筆會被誤判為主包視角,
+    # 把主包資料全部蓋掉。viewing_team 會對 as_team 做權限校驗。
+    want = data.get("as_team", _UNSET)
+    vteam, is_sub = viewing_team(db, pid, master_team, want)
     # 權限資安關鍵:欄位可寫性只依「使用者在此專案所屬團隊的角色」判定,
     # 不可用使用者在其他團隊的角色 (跨團隊越權)。分包視角用分包團隊。
     blocked = writable_fields(db, vteam)
@@ -832,10 +857,10 @@ def update_project(pid):
     SHARED_ONLY_FOR_MASTER = (   # 這些共享欄位分包不可改
         "name", "year", "status", "contract_no", "part_no", "so_number",
         "start_date", "end_date", "kickoff_date", "warranty_years",
-        "contract_scan", "nda_date", "nda_scan", "team_id",
-        "awarded_amount")   # 決標金額:分包不可改 (且不顯示主包值)
-    # participants (其他參與者)、notes、notify_days_before、里程碑、認列、成員:
-    # 分包各自獨立,不在唯讀集合
+        "contract_scan", "nda_date", "nda_scan", "team_id")
+    # awarded_amount (決標金額)、participants (其他參與者)、notes、
+    # notify_days_before、里程碑、認列、成員:分包各自獨立,不在唯讀集合。
+    # 決標金額分包獨立時寫入 override 的 awarded_amount 欄位 (見下方)。
     if is_sub:
         for k in list(data.keys()):
             if k in SHARED_ONLY_FOR_MASTER:
@@ -852,13 +877,15 @@ def update_project(pid):
     changes = {
         f: [old[f], v] for f, v in fields.items() if old[f] != v
     }
-    # 分包視角:備註、提醒天數、其他參與者 寫入該團隊 override (各自獨立),
-    # 不動主包 projects (決標金額分包不可改,前面已 pop)
+    # 分包視角:備註、提醒天數、其他參與者、決標金額 寫入該團隊 override
+    # (各自獨立),不動主包 projects
     if is_sub:
         ov_notes = fields.pop("notes", "__none__")
         ov_nd = fields.pop("notify_days_before", "__none__")
         ov_pt = fields.pop("participants", "__none__")
-        if ov_notes != "__none__" or ov_nd != "__none__" or ov_pt != "__none__":
+        ov_aa = fields.pop("awarded_amount", "__none__")
+        if (ov_notes != "__none__" or ov_nd != "__none__"
+                or ov_pt != "__none__" or ov_aa != "__none__"):
             kw = {}
             if ov_notes != "__none__":
                 kw["notes"] = ov_notes
@@ -866,6 +893,8 @@ def update_project(pid):
                 kw["notify_days_before"] = ov_nd
             if ov_pt != "__none__":
                 kw["participants"] = ov_pt
+            if ov_aa != "__none__":
+                kw["awarded_amount"] = ov_aa
             upsert_override(db, pid, vteam, **kw)
             changes["override"] = ["(team)", vteam]
     if fields:
