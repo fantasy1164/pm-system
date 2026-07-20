@@ -480,6 +480,11 @@ function applyFontScale(scale) {
   const dn = $("#fsDown"), up = $("#fsUp");
   if (dn) dn.disabled = scale <= FS_MIN + 1e-9;
   if (up) up.disabled = scale >= FS_MAX - 1e-9;
+  // 字級改變會縮放 fixed 元素的座標系,鈴鐺可能被推出畫面 —— 拉回可見範圍。
+  // zoom 生效有一拍延遲,用 requestAnimationFrame 等它套用後再量測重定位。
+  // rAF 的 callback 在本輪 script 跑完後才觸發,那時 Bell 一定已定義好;
+  // try 仍包一層以防萬一 (例如鈴鐺尚未 start)。
+  requestAnimationFrame(() => { try { Bell.reposition(); } catch (_e) {} });
   return scale;
 }
 function currentFontScale() {
@@ -2400,21 +2405,32 @@ const Bell = (function () {
   }
 
   /* ---------- 位置:拖曳 + 記住 ---------- */
+  // body 套了 zoom: var(--fs-scale) 做全系統字級縮放,而 zoom 會縮放整個座標
+  // 系 —— 連 position:fixed 元素的定位基準也跟著縮。所以放大字體時,同樣的
+  // left:1364px 會被渲染到 1364*scale 的位置,把鈴鐺推出畫面右下角外而看不見。
+  // fixed 元素在 zoom 座標系裡的可視寬高是 innerWidth/scale,定位一律用這個。
+  function fsScale() {
+    return parseFloat(getComputedStyle(document.body).zoom) ||
+           parseFloat(document.documentElement.style.getPropertyValue("--fs-scale")) || 1;
+  }
+  function vw() { return innerWidth / fsScale(); }
+  function vh() { return innerHeight / fsScale(); }
+
   function clampPos(x, y) {
     const m = 6, w = fab.offsetWidth, h = fab.offsetHeight;
-    return [Math.max(m, Math.min(x, innerWidth - w - m)),
-            Math.max(m, Math.min(y, innerHeight - h - m))];
+    return [Math.max(m, Math.min(x, vw() - w - m)),
+            Math.max(m, Math.min(y, vh() - h - m))];
   }
   // 吸附到最近的邊:比較按鈕中心到上下左右四邊的距離,貼到最短的那一邊。
   function snapToEdge(x, y) {
     const m = 6, w = fab.offsetWidth, h = fab.offsetHeight;
     const cx = x + w / 2, cy = y + h / 2;
-    const dl = cx, dr = innerWidth - cx, dt = cy, db = innerHeight - cy;
+    const dl = cx, dr = vw() - cx, dt = cy, db = vh() - cy;
     const min = Math.min(dl, dr, dt, db);
     if (min === dl) x = m;
-    else if (min === dr) x = innerWidth - w - m;
+    else if (min === dr) x = vw() - w - m;
     else if (min === dt) y = m;
-    else y = innerHeight - h - m;
+    else y = vh() - h - m;
     return clampPos(x, y);
   }
   function placeFab(x, y) {
@@ -2426,21 +2442,23 @@ const Bell = (function () {
   function loadPos() {
     const saved = localStorage.getItem("pm_bell_pos");
     if (saved) { try { const p = JSON.parse(saved); return placeFab(p.x, p.y); } catch (_e) {} }
-    placeFab(innerWidth - 52 - 24, innerHeight - 52 - 24);   // 預設右下
+    placeFab(vw() - 52 - 24, vh() - 52 - 24);   // 預設右下 (zoom 座標系)
   }
   function savePos() {
     localStorage.setItem("pm_bell_pos",
       JSON.stringify({ x: fab.offsetLeft, y: fab.offsetTop }));
   }
   // 面板貼著按鈕開:水平上盡量與按鈕對齊但不超出畫面;垂直上,按鈕在畫面
-  // 上半就往下開、下半就往上開,讓面板總是朝畫面中央展開。
+  // 上半就往下開、下半就往上開,讓面板總是朝畫面中央展開。getBoundingClientRect
+  // 回的是縮放後的實際像素,要除以 scale 換回 zoom 座標系才能跟 vw()/vh() 比。
   function positionPanel() {
     if (panel.hidden) return;
-    const r = fab.getBoundingClientRect();
+    const s = fsScale(), r = fab.getBoundingClientRect();
+    const rl = r.left / s, rt = r.top / s, rb = r.bottom / s;
     const pw = panel.offsetWidth, ph = panel.offsetHeight, m = 8;
-    let left = Math.min(r.left, innerWidth - pw - m); left = Math.max(m, left);
-    let top = (r.top < innerHeight / 2) ? r.bottom + m : r.top - ph - m;
-    top = Math.max(m, Math.min(top, innerHeight - ph - m));
+    let left = Math.min(rl, vw() - pw - m); left = Math.max(m, left);
+    let top = (rt < vh() / 2) ? rb + m : rt - ph - m;
+    top = Math.max(m, Math.min(top, vh() - ph - m));
     panel.style.left = left + "px"; panel.style.top = top + "px";
   }
 
@@ -2565,7 +2583,15 @@ const Bell = (function () {
     pollTimer = setInterval(poll, 30000);   // 每 30 秒輪詢一次
   }
 
-  return { start };
+  return {
+    start,
+    // 字級 (zoom) 改變後,可視座標系跟著縮放,原本的位置可能落到畫面外。
+    // 用目前的位置重新 clamp 一次,把鈴鐺拉回可見範圍;面板一併重定位。
+    reposition() {
+      const [x, y] = clampPos(fab.offsetLeft, fab.offsetTop);
+      placeFab(x, y); savePos();
+    },
+  };
 })();
 
 /* ============================== 批次匯入專案 ============================== */
