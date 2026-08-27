@@ -1444,6 +1444,31 @@ async function renderNotifyProject(rootBody) {
 }
 
 /* ============================== 保固總表 ============================== */
+// 保固清單去重:同一「契約號 + 專案團隊」只保留最新年度那筆。
+// 契約號空白者一律保留 (無從判斷是否同案);主包視角取 team_id、
+// 分包視角取 viewing_team_id,分包/主包分屬不同團隊者各自保留 (雙棲兩筆不併)。
+function dedupWarrantyByContract(items) {
+  const effTeam = p =>
+    p.is_subcontract_view ? p.viewing_team_id : p.team_id;
+  const newer = (a, b) => {                 // a 是否比 b「新」(較優先保留)
+    const ay = a.p.year || 0, by = b.p.year || 0;
+    if (ay !== by) return ay > by;          // 先比立案年度
+    const ae = a.p.end_date || "", be = b.p.end_date || "";
+    if (ae !== be) return ae > be;          // 同年再比履約迄日
+    return (a.p.id || 0) > (b.p.id || 0);   // 再不然用 id 保穩定
+  };
+  const best = new Map();                   // key: 契約號\u0000團隊
+  const keep = [];                          // 無契約號者原樣保留
+  for (const it of items) {
+    const cno = String(it.p.contract_no || "").trim();
+    if (!cno) { keep.push(it); continue; }
+    const key = cno + "\u0000" + effTeam(it.p);
+    const cur = best.get(key);
+    if (!cur || newer(it, cur)) best.set(key, it);
+  }
+  return [...keep, ...best.values()];
+}
+
 // 跨年度:載入所有年度、有保固的專案,分「保固中」「完保」兩清單
 async function renderWarranty() {
   const box = $("#content");
@@ -1456,8 +1481,8 @@ async function renderWarranty() {
     return;
   }
   // 僅取有保固年數且有履約迄日者;依團隊資料牆過濾 (後端已處理)
-  const withWty = all.map(p => ({ p, w: warrantyInfo(p) }))
-    .filter(x => x.w);
+  const withWty = dedupWarrantyByContract(
+    all.map(p => ({ p, w: warrantyInfo(p) })).filter(x => x.w));
   const active = withWty.filter(x => x.w.active)
     .sort((a, b) => a.w.daysLeft - b.w.daysLeft);       // 快到期在前
   const expired = withWty.filter(x => !x.w.active && x.w.end < utc(todayISO()))
