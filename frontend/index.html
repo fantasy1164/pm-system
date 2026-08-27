@@ -1555,7 +1555,8 @@ function renderGantt() {
   const W = Math.ceil(totalDays * px);
   // 橫屏手機等矮視窗:壓縮列高與表頭,一屏塞進更多專案
   const short = window.innerHeight < 520;
-  const HEAD = short ? 26 : 34, ROW = short ? 32 : 44;
+  // 列高需容納「長條 + 上下兩車道里程碑標籤」,故加大避免標籤壓到列線
+  const HEAD = short ? 26 : 34, ROW = short ? 46 : 64;
   const H = HEAD + dated.length * ROW;
   const X = (ms) => Math.round((ms - lo) / DAY * px);
 
