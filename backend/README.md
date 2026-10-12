@@ -60,7 +60,7 @@ curl -X POST http://127.0.0.1:5000/api/years/116/init
 - 日期驗證以「合併後的值」檢查起迄順序 (單改一邊也擋得住)
 - CORS 目前全開 (`PM_CORS_ORIGIN` 環境變數可鎖定,上線時設為 GitHub Pages 網域)
 - 資料庫路徑可用 `PM_DB_PATH` 覆寫 (第三階段 Drive 還原機制會用到)
-- projects.status: ongoing=進行中 / not_awarded=未成案 / closed=已結案
+- projects.status: ongoing=進行中 / not_awarded=未成案 / closed=已結案 / warranty=保固中
 - 年度切換採「複製快照」:新年度為獨立複本 (copied_from 記錄來源),修改不影響上一年度定稿;同一來源不會重複複製
 - 既有資料庫升級:schema 新增 copied_from 欄位,示範階段直接刪除 pm.sqlite 重跑 seed 即可
 

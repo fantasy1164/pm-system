@@ -442,7 +442,8 @@ const S = {
 const getTok = () => sessionStorage.getItem("pm_token");
 const setTok = (t) => t ? sessionStorage.setItem("pm_token", t)
                         : sessionStorage.removeItem("pm_token");
-const STATUS_TXT = { ongoing:"進行中", not_awarded:"未成案", closed:"已結案" };
+const STATUS_TXT = { ongoing:"進行中", not_awarded:"未成案", closed:"已結案",
+                     warranty:"保固中" };
 // 專案調色盤:以 id 對應,顏色跨裝置/重整穩定;已結案一律灰色 (視覺退場)
 const PALETTE = ["#0F766E","#2563EB","#B45309","#7C3AED","#C2410C","#0E7490",
                  "#BE185D","#4D7C0F","#B91C1C","#6D28D9","#0369A1","#A16207"];
@@ -1147,13 +1148,13 @@ function renderTable() {
     return th;
   })));
 
-  // D.a 依狀態分組;保固中 (履約已迄且在保固期內) 獨立一組排最後,
-  // 該組專案從原狀態組移走 (只出現一次)。分組順序可拖拉調整 (存 localStorage)
+  // D.a 依狀態分組;保固中 = 狀態手動設為保固中,或 (自動推算) 履約已迄且
+  // 在保固期內;該組專案從原狀態組移走 (只出現一次)。分組順序可拖拉調整 (存 localStorage)
   const LABELS = { ongoing: "進行中", not_awarded: "未成案",
                    closed: "已結案", warranty: "保固中" };
   const groupOf = (p) => {
     const w = warrantyInfo(p);
-    return (w && w.active) ? "warranty" : p.status;
+    return (p.status === "warranty" || (w && w.active)) ? "warranty" : p.status;
   };
   const tbody = el("tbody");
   const order = groupOrder();
@@ -1591,7 +1592,7 @@ function renderGantt() {
     const fill = projColor(p);
     const dash = p.status === "not_awarded"
       ? ` stroke="${fill}" stroke-width="1.5" stroke-dasharray="5 3"` : "";
-    const op = p.status === "not_awarded" ? "0.4" : (p.status === "closed" ? "0.65" : "0.92");
+    const op = { not_awarded: "0.4", closed: "0.65", warranty: "0.55" }[p.status] || "0.92";
     svg += `<g class="bar" data-id="${p.id}" data-vt="${p.viewing_team_id != null ? p.viewing_team_id : ''}" data-sub="${p.is_subcontract_view ? 1 : 0}" style="cursor:pointer">`;
     svg += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="${fill}" opacity="${op}"${dash}/>`;
     // 保固期:從履約迄日延伸到保固迄日,以「同色實心淺色塊」表示,
@@ -1719,6 +1720,7 @@ ${rocDate(m.date)}</title></path>`;
     el("span", { class: "legend" },
       el("span", {}, "顏色=各專案"),
       legendItem(null, "實心=進行中", "solid"),
+      legendItem(null, "淡色=保固中", "faded"),
       legendItem(null, "虛線=未成案", "dash"),
       legendItem("var(--gray)", "灰=已結案", "solid"),
       el("span", {}, "◆ 啟動會議"),
@@ -1748,6 +1750,7 @@ function legendItem(color, txt, kind) {
     i.style.background = "transparent";
     i.style.border = "1.5px dashed var(--ink2)";
   } else i.style.background = color || "var(--teal)";
+  if (kind === "faded") i.style.opacity = "0.55";
   return s;
 }
 function zoom(dv) {
@@ -2054,7 +2057,8 @@ function openModal(p) {
     const s = el("select", {},
       el("option", { value: "ongoing" }, "進行中"),
       el("option", { value: "not_awarded" }, "未成案"),
-      el("option", { value: "closed" }, "已結案"));
+      el("option", { value: "closed" }, "已結案"),
+      el("option", { value: "warranty" }, "保固中"));
     s.value = d.status; return s; })();
   f.team_id = (() => {
     const s = el("select", {}, el("option", { value: "" }, "未指定"),
@@ -2650,12 +2654,13 @@ const Importer = (function () {
     return `${y}-${String(+m[2]).padStart(2, "0")}-${String(+m[3]).padStart(2, "0")}`;
   };
   const st = (s) => ({ "進行中": "ongoing", "未成案": "not_awarded", "已結案": "closed",
+                       "保固中": "warranty",
                        "ongoing": "ongoing", "not_awarded": "not_awarded",
-                       "closed": "closed" })[String(s).trim()] || null;
+                       "closed": "closed", "warranty": "warranty" })[String(s).trim()] || null;
   const COLS = [
     { key: "name",       label: "*案名",                    match: "案名", conv: (s) => s.trim() },
     { key: "year",       label: "*年度(民國,例115)",        match: "年度", conv: num },
-    { key: "status",     label: "狀態(進行中/未成案/已結案)", match: "狀態", conv: st },
+    { key: "status",     label: "狀態(進行中/未成案/已結案/保固中)", match: "狀態", conv: st },
     { key: "contract_no", label: "契約號",                  match: "契約", conv: (s) => s.trim() },
     { key: "part_no",    label: "料號",                     match: "料號", conv: (s) => s.trim() },
     { key: "so_number",  label: "SO編號",                   match: "so",   conv: (s) => s.trim() },

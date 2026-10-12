@@ -7,6 +7,7 @@
 import hmac
 import json
 import os
+import re
 import sqlite3
 from datetime import date, datetime
 
@@ -211,6 +212,54 @@ EDIT_PID = auth_core.require_edit(get_db, "pid")  # 逐案編輯權
 ADMIN = auth_core.require_admin(get_db)        # 僅管理者
 
 
+# 專案狀態 (與 schema.sql 的 CHECK 一致)
+PROJECT_STATUSES = ("ongoing", "not_awarded", "closed", "warranty")
+
+
+def _migrate_status_check(db):
+    """既有資料庫的 projects.status CHECK 補上新狀態 (冪等)。
+
+    SQLite 無法 ALTER 既有的 CHECK 約束,CREATE IF NOT EXISTS 也不會改舊表。
+    依 SQLite 官方文件 (ALTER TABLE 第 7 節) 的做法:只改 sqlite_master 裡的
+    表定義文字 —— 放寬 CHECK 不影響磁碟上的資料格式,不需重建表,外鍵
+    (milestones 等的 ON DELETE CASCADE) 與後來 ALTER 補上的欄位都原樣保留。
+    """
+    row = db.execute("SELECT sql FROM sqlite_master"
+                     " WHERE type = 'table' AND name = 'projects'").fetchone()
+    if row is None:
+        return
+    sql = row[0]
+    m = re.search(r"CHECK\s*\(\s*status\s+IN\s*\(([^)]*)\)\s*\)", sql)
+    if m is None:
+        return                                   # 無 CHECK:本來就不擋
+    have = set(re.findall(r"'([^']*)'", m.group(1)))
+    missing = [s for s in PROJECT_STATUSES if s not in have]
+    if not missing:
+        return
+    allowed = [s for s in re.findall(r"'([^']*)'", m.group(1))] + missing
+    new_check = "CHECK (status IN (" + ", ".join(f"'{s}'" for s in allowed) + "))"
+    new_sql = sql[:m.start()] + new_check + sql[m.end():]
+    try:
+        ver = db.execute("PRAGMA schema_version").fetchone()[0]
+        db.execute("PRAGMA writable_schema = ON")
+        db.execute("UPDATE sqlite_master SET sql = ?"
+                   " WHERE type = 'table' AND name = 'projects'", (new_sql,))
+        db.execute(f"PRAGMA schema_version = {ver + 1}")
+        db.execute("PRAGMA writable_schema = OFF")
+        db.commit()
+        ok = db.execute("PRAGMA integrity_check").fetchone()[0]
+        print(f"[migrate] projects.status CHECK 補上 {missing} (integrity: {ok})",
+              flush=True)
+    except sqlite3.DatabaseError as e:
+        # 不讓開機失敗:最壞情況只是新狀態存檔時被 CHECK 擋下 (API 回錯誤)
+        db.rollback()
+        try:
+            db.execute("PRAGMA writable_schema = OFF")
+        except sqlite3.DatabaseError:
+            pass
+        print(f"[migrate] projects.status CHECK 更新失敗: {e}", flush=True)
+
+
 # 欄位遷移清單:CREATE IF NOT EXISTS 不會對「既有表」加欄位,
 # 新增欄位一律登記於此,init_db 會自動 ALTER TABLE 補上 (冪等)
 MIGRATIONS = [
@@ -240,6 +289,8 @@ def init_db():
         cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
         if col not in cols:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+    db.commit()
+    _migrate_status_check(db)
     # 清掉孤兒的已讀記錄。正常情況 ON DELETE CASCADE 會處理,但那要連線有開
     # foreign_keys pragma —— 備份還原等路徑用的是另開的連線,不保證開了。
     # 更要命的是 SQLite 會重用 id:殘留的孤兒 read 記錄可能撞上「未來某則新
@@ -380,8 +431,8 @@ def validate_project(data, partial=False):
     s, e = out.get("start_date"), out.get("end_date")
     if s and e and s > e:
         return None, "履約迄日不可早於起日"
-    if "status" in out and out["status"] not in ("ongoing", "not_awarded", "closed"):
-        return None, "status 僅接受 ongoing / not_awarded / closed"
+    if "status" in out and out["status"] not in PROJECT_STATUSES:
+        return None, "status 僅接受 " + " / ".join(PROJECT_STATUSES)
     wy = out.get("warranty_years")
     if wy is not None and (not isinstance(wy, int) or wy < 0 or wy > 50):
         return None, "保固年數須為 0~50 的整數"
@@ -1071,7 +1122,12 @@ def delete_my_subcontract_data(pid, team_id):
 @app.post("/api/years/<int:new_year>/init")
 @ADMIN
 def init_year(new_year):
-    """建立新年度:把履約期跨入新年度的進行中專案「複製」一份到新年度。
+    """建立新年度:把跨入新年度的專案「複製」一份到新年度。
+
+    - 進行中:履約迄日 >= 新年度 1/1
+    - 保固中:保固迄日 (履約迄日 + 保固年數) >= 新年度 1/1;
+      未填保固年數或履約迄日者無從判斷,視為仍在保固、照樣複製
+      (保固結束請把狀態改為已結案,隔年就不再複製)
 
     - 每個年度是獨立快照,新年度的修改不影響上一年度的定稿
     - copied_from 記錄來源;同一來源已複製過則跳過 (端點可安全重打)
@@ -1080,11 +1136,14 @@ def init_year(new_year):
     db = get_db()
     boundary = f"{1911 + new_year}-01-01"  # 民國轉西元
     rows = db.execute(
-        "SELECT * FROM projects p WHERE p.deleted = 0 AND p.status = 'ongoing'"
-        " AND p.year = ? AND p.end_date >= ?"
+        "SELECT * FROM projects p WHERE p.deleted = 0 AND p.year = ?"
+        " AND ((p.status = 'ongoing' AND p.end_date >= ?)"
+        "   OR (p.status = 'warranty' AND (p.warranty_years IS NULL"
+        "       OR p.end_date IS NULL"
+        "       OR date(p.end_date, '+' || p.warranty_years || ' years') >= ?)))"
         " AND NOT EXISTS (SELECT 1 FROM projects c WHERE c.copied_from = p.id"
         "                 AND c.year = ? AND c.deleted = 0)",
-        (new_year - 1, boundary, new_year),
+        (new_year - 1, boundary, boundary, new_year),
     ).fetchall()
     copied = []
     for r in rows:

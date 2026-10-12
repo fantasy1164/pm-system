@@ -25,8 +25,9 @@ CREATE TABLE IF NOT EXISTS projects (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     year          INTEGER NOT NULL,               -- 所屬年度 (民國,例 115)
     status        TEXT NOT NULL DEFAULT 'ongoing'
-                  CHECK (status IN ('ongoing', 'not_awarded', 'closed')),
-                  -- ongoing=進行中, not_awarded=未成案, closed=已結案
+                  CHECK (status IN ('ongoing', 'not_awarded', 'closed', 'warranty')),
+                  -- ongoing=進行中, not_awarded=未成案, closed=已結案, warranty=保固中
+                  -- (既有資料庫的 CHECK 由 app.py 的 _migrate_status_check 補上)
     contract_no   TEXT NOT NULL DEFAULT '',       -- 契約號
     part_no       TEXT NOT NULL DEFAULT '',       -- 料號
     so_number     TEXT NOT NULL DEFAULT '',       -- SO number
