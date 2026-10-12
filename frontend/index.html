@@ -1355,7 +1355,8 @@ async function renderNotifyProject(rootBody) {
   wrap.append(headBar,
     el("div", { style: "color:var(--ink2);font-size:12.5px;margin-bottom:12px" },
       "設定各團隊的通知要發給哪些角色(收件人取該角色成員的通知信箱)。"
-      + "「里程碑到期前幾天提醒」的天數在各專案的編輯視窗設定。"));
+      + "「到期前幾天提醒」的天數 (里程碑與保固截止日共用) 在各專案的編輯視窗設定;"
+      + "履約迄日到期且有填保固年數的進行中專案,系統會自動轉為保固中並發轉保固通知。"));
 
   if (!manage.length) {
     wrap.append(el("div", { class: "state-msg" }, "你目前不是任何團隊的專案經理"));
@@ -2111,7 +2112,7 @@ function openModal(p) {
       ndaScan.el),
     // 通知
     section("通知設定", "#3aa76d",
-      el("label", { class: "full" }, "里程碑到期前幾天提醒(留空=不提醒)",
+      el("label", { class: "full" }, "里程碑/保固截止日到期前幾天提醒(留空=不提醒)",
         f.notify_days_before)),
     // 參與人員
     section("參與人員", "#c0507a",

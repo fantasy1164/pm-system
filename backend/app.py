@@ -1001,6 +1001,15 @@ def update_project(pid):
                     except Exception as e:
                         _record(db, "project_closed", item, "failed", str(e)[:300])
                 db.commit()
+    # 触发点6:轉保固通知 — 專案經理手動把狀態改為保固中的當下即時發送。
+    # (忘了改的,由排程 scan_warranty_start 在履約迄日到期後自動轉入並發送;
+    # 兩邊共用 dedup_key,同一專案只會收到一次)
+    if new_status == "warranty" and old["status"] != "warranty":
+        proj = db.execute("SELECT * FROM projects WHERE id = ?", (pid,)).fetchone()
+        if proj:
+            for item in build_warranty_start_items(db, proj, "專案經理手動變更狀態"):
+                dispatch_item(db, "warranty_start", item)
+            db.commit()
     return jsonify(fetch_project(db, pid))
 
 
@@ -1356,6 +1365,8 @@ def auth_me():
 NOTIFY_TYPES = [
     {"key": "milestone_due", "label": "里程碑到期提醒"},
     {"key": "project_closed", "label": "專案結案通知"},
+    {"key": "warranty_start", "label": "轉保固通知"},
+    {"key": "warranty_due", "label": "保固到期提醒"},
 ]
 NOTIFY_ROLES = ("pm", "dept_head", "sales", "dev")
 
@@ -1559,7 +1570,160 @@ def roc_str(iso):
     return f"{int(y) - 1911}/{int(m)}/{int(d)}"
 
 
-SCANNERS = {"milestone_due": scan_milestone_due}
+# ------------------------------------------------------------ 保固相關通知
+def warranty_end_date(end_iso, years):
+    """保固迄日 = 履約迄日 + 保固年數 (與前端 warrantyInfo 一致:
+    2/29 遇非閏年順延為 3/1)。無法計算時回 None。"""
+    end = parse_iso(end_iso)
+    if end is None or not years:
+        return None
+    try:
+        return end.replace(year=end.year + int(years))
+    except ValueError:
+        return end.replace(year=end.year + int(years), month=3, day=1)
+
+
+def project_root_id(db, pid):
+    """沿 copied_from 追到最初那筆。跨年度複製的同一專案共用此 id 當去重鍵,
+    避免 115、116 年度各一筆時同一封通知寄兩次。"""
+    seen = set()
+    while pid not in seen:
+        seen.add(pid)
+        r = db.execute("SELECT copied_from FROM projects WHERE id = ?",
+                       (pid,)).fetchone()
+        if not r or r["copied_from"] is None:
+            break
+        pid = r["copied_from"]
+    return pid
+
+
+def project_notify_teams(db, p):
+    """專案層級的通知對象團隊:主包 + 所有 active 分包 (比照主包里程碑)。
+    線上版沒有主包團隊就無收件人;單機版沒有團隊概念,回 [None]。"""
+    if p["team_id"] is None:
+        return [None] if config.IS_STANDALONE else []
+    return [p["team_id"]] + subcontract_teams(db, p["id"])
+
+
+def build_warranty_start_items(db, p, how):
+    """轉保固通知 (手動變更狀態與排程自動轉入共用)。
+    去重鍵不含時間戳:同一專案 (含跨年度複本) 每個團隊只寄一次。"""
+    root = project_root_id(db, p["id"])
+    wend = warranty_end_date(p["end_date"], p["warranty_years"])
+    start_txt = (f"{p['end_date']} (民國 {roc_str(p['end_date'])})"
+                 if parse_iso(p["end_date"]) else "未填履約迄日")
+    end_txt = (f"{wend.isoformat()} (民國 {roc_str(wend.isoformat())})"
+               if wend else "未填保固年數,無法計算")
+    out = []
+    for tid in project_notify_teams(db, p):
+        recipients = resolve_recipients(db, tid, "warranty_start")
+        if not recipients:
+            continue
+        subject = f"[轉保固] {p['name']} 已轉入保固"
+        body = (f"專案「{p['name']}」已轉入保固。\n\n"
+                f"轉入方式:{how}\n"
+                f"保固起日 (=履約迄日):{start_txt}\n"
+                f"保固年數:{p['warranty_years'] or '未填'}\n"
+                f"保固迄日:{end_txt}\n"
+                f"系統網址:{SYSTEM_URL}\n")
+        out.append({"dedup_key": f"warranty_start:{root}:{tid}",
+                    "project_id": p["id"], "subject": subject, "body": body,
+                    "team_id": tid, "recipients": recipients})
+    return out
+
+
+def scan_warranty_start(db, today):
+    """履約迄日到期 → 自動轉入保固並發轉保固通知。
+
+    - 進行中、有保固年數、履約迄日 <= 今天、保固尚未結束 → 狀態改為保固中
+      (寫稽核紀錄) 並發通知。不論逾期多久都會轉,上線前的舊資料也一樣。
+    - 已是保固中 (手動改的) 也一併列入:手動當下若寄送失敗、或在本功能上線前
+      就改成保固中,由這裡補寄;已成功寄過的由 dedup_key 擋掉。
+    - 保固期已結束的不轉、不寄 (那該是結案,不是轉保固)。
+    """
+    where = "deleted = 0"
+    if not config.IS_STANDALONE:
+        where += " AND team_id IS NOT NULL"
+    rows = db.execute(
+        f"SELECT * FROM projects WHERE {where} AND (status = 'warranty'"
+        "  OR (status = 'ongoing' AND warranty_years > 0"
+        "      AND end_date IS NOT NULL AND end_date <= ?))"
+        " ORDER BY year DESC, id DESC", (today.isoformat(),)).fetchall()
+    out, seen = [], set()
+    for p in rows:
+        wend = warranty_end_date(p["end_date"], p["warranty_years"])
+        if wend is not None and wend < today:
+            continue
+        how = "專案經理手動變更狀態"
+        if p["status"] == "ongoing":
+            db.execute("UPDATE projects SET status = 'warranty',"
+                       " updated_at = datetime('now','localtime') WHERE id = ?",
+                       (p["id"],))
+            # 排程沒有請求者,actor 直接記系統 (不經 current_actor)
+            db.execute(
+                "INSERT INTO audit_log (actor, action, entity, entity_id, changes)"
+                " VALUES (?, ?, ?, ?, ?)",
+                ("system:auto-warranty", "update", "projects", p["id"],
+                 json.dumps({"status": ["ongoing", "warranty"],
+                             "reason": "履約迄日到期,自動轉入保固"},
+                            ensure_ascii=False)))
+            how = "履約迄日到期,系統自動轉入"
+        root = project_root_id(db, p["id"])
+        if root in seen:                 # 跨年度複本:只取最新年度那筆發
+            continue
+        seen.add(root)
+        out.extend(build_warranty_start_items(db, p, how))
+    return out
+
+
+def scan_warranty_due(db, today):
+    """保固截止日前 N 天提醒;N 沿用專案的「到期前幾天提醒」設定。
+    主包團隊用主包的 N;分包團隊用該分包自己的 N (未設定則沿用主包的)。"""
+    where = "deleted = 0"
+    if not config.IS_STANDALONE:
+        where += " AND team_id IS NOT NULL"
+    rows = db.execute(
+        f"SELECT * FROM projects WHERE {where}"
+        " AND status IN ('ongoing', 'warranty') AND warranty_years > 0"
+        " AND end_date IS NOT NULL ORDER BY year DESC, id DESC").fetchall()
+    out, seen = [], set()
+    for p in rows:
+        wend = warranty_end_date(p["end_date"], p["warranty_years"])
+        if wend is None:
+            continue
+        root = project_root_id(db, p["id"])
+        lead = (wend - today).days
+        for tid in project_notify_teams(db, p):
+            if (root, tid) in seen:
+                continue
+            n = p["notify_days_before"]
+            if tid is not None and tid != p["team_id"]:
+                ov = fetch_override(db, p["id"], tid)
+                if ov and ov["notify_days_before"] is not None:
+                    n = ov["notify_days_before"]
+            if n is None or lead != n:
+                continue
+            seen.add((root, tid))
+            recipients = resolve_recipients(db, tid, "warranty_due")
+            if not recipients:
+                continue
+            wiso = wend.isoformat()
+            out.append({
+                "dedup_key": f"warranty_due:{root}:{tid}:{wiso}",
+                "project_id": p["id"],
+                "subject": f"[保固提醒] {p['name']} 保固將於 {lead} 天後到期",
+                "body": (f"專案:{p['name']}\n"
+                         f"保固迄日:{wiso} (民國 {roc_str(wiso)})\n"
+                         f"距今:{lead} 天\n"
+                         f"系統網址:{SYSTEM_URL}\n"),
+                "team_id": tid, "recipients": recipients})
+    return out
+
+
+# 順序有意義:先自動轉保固,再掃保固到期
+SCANNERS = {"milestone_due": scan_milestone_due,
+            "warranty_start": scan_warranty_start,
+            "warranty_due": scan_warranty_due}
 
 
 # ------------------------------------------------------- 通知矩陣 (pm 可寫自己團隊)
@@ -1848,41 +2012,44 @@ def notify_run():
 
 
 def run_scanners(db, today):
-    """跑所有排程掃描 (目前只有里程碑到期),把成立的通知記錄進 notifications。
+    """跑所有排程掃描 (里程碑到期、自動轉保固、保固到期),把成立的通知記錄進 notifications。
 
     抽成獨立函式,讓 notify/run 端點與單機版的「啟動時掃一次」共用同一套邏輯
     與去重規則。回傳統計 dict。呼叫端負責 commit 與 mark_dirty。
     """
-    dry = config.NOTIFY_DRYRUN
-    result = {"scanned": 0, "sent": 0, "skipped": 0, "failed": 0, "dryrun": dry}
+    result = {"scanned": 0, "sent": 0, "skipped": 0, "failed": 0,
+              "dryrun": config.NOTIFY_DRYRUN}
     for ntype, scanner in SCANNERS.items():
         for item in scanner(db, today):
             result["scanned"] += 1
-            # 去重:僅「成功發送」過才跳過;失敗/乾跑/略過可再次嘗試
-            done = db.execute(
-                "SELECT 1 FROM notifications WHERE dedup_key = ?"
-                " AND status = 'sent'", (item["dedup_key"],)).fetchone()
-            if done:
-                result["skipped"] += 1
-                continue
-            recipients = item["recipients"]
-            if not recipients:
-                # 沒有收件人 (矩陣沒勾或無 notify_email):記錄但標記,避免每天重掃
-                _record(db, ntype, item, "skipped", "無收件人")
-                result["skipped"] += 1
-                continue
-            if dry:
-                _record(db, ntype, item, "dryrun", "乾跑模式 (mailer 尚未啟用)")
-                result["sent"] += 1
-                continue
-            try:
-                send_email(recipients, item["subject"], item["body"])
-                _record(db, ntype, item, "sent", None)
-                result["sent"] += 1
-            except Exception as e:
-                _record(db, ntype, item, "failed", str(e)[:300])
-                result["failed"] += 1
+            result[dispatch_item(db, ntype, item)] += 1
     return result
+
+
+def dispatch_item(db, ntype, item):
+    """寄出一則通知並記錄;回傳 'sent' / 'skipped' / 'failed' (乾跑計為 sent)。
+    排程掃描與事件即時觸發 (如轉保固) 共用,去重規則一致。"""
+    # 去重:僅「成功發送」過才跳過;失敗/乾跑/略過可再次嘗試
+    done = db.execute(
+        "SELECT 1 FROM notifications WHERE dedup_key = ?"
+        " AND status = 'sent'", (item["dedup_key"],)).fetchone()
+    if done:
+        return "skipped"
+    recipients = item["recipients"]
+    if not recipients:
+        # 沒有收件人 (矩陣沒勾或無 notify_email):記錄但標記,避免每天重掃
+        _record(db, ntype, item, "skipped", "無收件人")
+        return "skipped"
+    if config.NOTIFY_DRYRUN:
+        _record(db, ntype, item, "dryrun", "乾跑模式 (mailer 尚未啟用)")
+        return "sent"
+    try:
+        send_email(recipients, item["subject"], item["body"])
+        _record(db, ntype, item, "sent", None)
+        return "sent"
+    except Exception as e:
+        _record(db, ntype, item, "failed", str(e)[:300])
+        return "failed"
 
 
 def startup_scan():
